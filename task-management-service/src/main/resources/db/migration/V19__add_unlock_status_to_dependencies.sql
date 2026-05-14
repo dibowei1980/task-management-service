@@ -1,0 +1,1 @@
+ALTER TABLE task_dependencies ADD COLUMN unlock_status VARCHAR(32) DEFAULT 'QA_COMPLETED';

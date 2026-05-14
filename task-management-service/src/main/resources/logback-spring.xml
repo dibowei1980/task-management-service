@@ -1,0 +1,49 @@
+<configuration>
+    <springProperty name="APP_NAME" source="spring.application.name" defaultValue="task-management-service"/>
+    <springProperty name="LOG_DIR" source="app.log.dir" defaultValue="./logs"/>
+    <springProperty name="LOG_LEVEL_ROOT" source="app.log.level.root" defaultValue="INFO"/>
+    <springProperty name="LOG_LEVEL_APP" source="app.log.level.app" defaultValue="DEBUG"/>
+    <springProperty name="ASYNC_QUEUE_SIZE" source="app.log.async.queue-size" defaultValue="8192"/>
+    <springProperty name="MAX_FILE_SIZE" source="app.log.max-file-size" defaultValue="50MB"/>
+    <springProperty name="MAX_HISTORY" source="app.log.max-history-days" defaultValue="7"/>
+    <springProperty name="TOTAL_SIZE_CAP" source="app.log.total-size-cap" defaultValue="5GB"/>
+
+    <conversionRule conversionWord="threadId" converterClass="com.example.taskmanagement.logging.ThreadIdConverter"/>
+    <conversionRule conversionWord="maskedMsg" converterClass="com.example.taskmanagement.logging.MaskedMessageConverter"/>
+
+    <appender name="RUN_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/run.log</file>
+        <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+            <charset>UTF-8</charset>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} level=%-5level thread=%thread tid=%threadId op=%X{operation:-SYSTEM} desc=%X{description:-} req=%X{requestId:-} user=%X{username:-} logger=%logger{36} msg=%maskedMsg%ex{full}%n</pattern>
+        </encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/archive/run.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>${MAX_FILE_SIZE}</maxFileSize>
+            <maxHistory>${MAX_HISTORY}</maxHistory>
+            <totalSizeCap>${TOTAL_SIZE_CAP}</totalSizeCap>
+            <cleanHistoryOnStart>true</cleanHistoryOnStart>
+        </rollingPolicy>
+    </appender>
+
+    <appender name="ASYNC_RUN_FILE" class="ch.qos.logback.classic.AsyncAppender">
+        <queueSize>${ASYNC_QUEUE_SIZE}</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <neverBlock>true</neverBlock>
+        <appender-ref ref="RUN_FILE"/>
+    </appender>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+            <charset>UTF-8</charset>
+            <pattern>%d{HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %maskedMsg%ex{full}%n</pattern>
+        </encoder>
+    </appender>
+
+    <logger name="com.example.taskmanagement" level="${LOG_LEVEL_APP}"/>
+
+    <root level="${LOG_LEVEL_ROOT}">
+        <appender-ref ref="ASYNC_RUN_FILE"/>
+        <appender-ref ref="CONSOLE"/>
+    </root>
+</configuration>

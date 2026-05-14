@@ -1,0 +1,9 @@
+﻿[INFO] Scanning for projects...
+[INFO] 
+[INFO] ----------------< com.example:task-management-service >-----------------
+[INFO] Building task-management-service 0.0.1-SNAPSHOT
+[INFO]   from pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- clean:3.3.2:clean (default-clean) @ task-management-service ---
+[INFO] Deleting D:\work\devlope\生产协同系统\task-management-service\target

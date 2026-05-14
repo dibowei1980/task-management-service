@@ -1,0 +1,115 @@
+@startuml
+
+' 样式配置
+skinparam classAttributeIconSize 0
+skinparam defaultFontName "Microsoft YaHei"
+skinparam packageStyle rectangle
+
+package "Controller Layer (API层)" {
+    class TaskController {
+        - taskService : TaskService
+        + createTask(task : Task) : ResponseEntity<Task> // 创建任务
+        + getAllTasks(page : int, size : int) : ResponseEntity<Page<Task>> // 分页获取任务
+        + getTaskById(id : UUID) : ResponseEntity<Task> // 获取任务详情
+        + updateTask(id : UUID, taskDetails : Task) : ResponseEntity<Task> // 更新任务
+        + deleteTask(id : UUID) : ResponseEntity<Void> // 删除任务
+        + updateTaskStatus(id : UUID, status : TaskStatus) : ResponseEntity<Task> // 更新状态
+        + assignTask(id : UUID, userId : Long) : ResponseEntity<Task> // 指派任务
+        + getSubTasks(id : UUID) : ResponseEntity<List<Task>> // 获取子任务
+        + addDependency(id : UUID, dependencyTaskId : UUID) : ResponseEntity<Void> // 添加依赖
+        + countCompletedTasksByAssignee(assigneeId : Long) : ResponseEntity<Long> // 统计完成任务
+    }
+    note top of TaskController : 处理HTTP请求，管理API端点
+}
+
+package "Service Layer (业务逻辑层)" {
+    interface TaskService {
+        + createTask(task : Task) : Task // 创建任务
+        + getTaskById(id : UUID) : Task // 根据ID查询
+        + getAllTasks(pageable : Pageable) : Page<Task> // 分页查询
+        + updateTask(id : UUID, taskDetails : Task) : Task // 更新详情
+        + deleteTask(id : UUID) : void // 删除任务
+        + updateTaskStatus(id : UUID, status : TaskStatus) : Task // 更新状态
+        + assignTask(id : UUID, userId : Long) : Task // 指派负责人
+        + getSubTasks(parentId : UUID) : List<Task> // 查询子任务
+        + addDependency(taskId : UUID, dependencyTaskId : UUID) : void // 添加依赖关系
+        + countCompletedTasksByAssignee(assigneeId : Long) : long // 按负责人统计完成任务
+    }
+
+    class TaskServiceImpl {
+        - taskRepository : TaskRepository
+        - taskDependencyRepository : TaskDependencyRepository
+    }
+    note right of TaskServiceImpl : 实现核心业务逻辑\n(事务管理, 状态流转, 依赖检查)
+}
+
+package "Repository Layer (数据访问层)" {
+    interface TaskRepository {
+        + findByAssigneeId(assigneeId : Long) : List<Task> // 按负责人查询
+        + findByStatus(status : TaskStatus) : List<Task> // 按状态查询
+        + findByParentTaskId(parentTaskId : UUID) : List<Task> // 按父任务查询
+        + countByAssigneeIdAndStatus(assigneeId : Long, status : TaskStatus) : long // 按负责人和状态计数
+    }
+
+    interface TaskDependencyRepository {
+        + findByTaskId(taskId : UUID) : List<TaskDependency> // 查询任务的前置依赖
+        + findByDependencyTaskId(dependencyTaskId : UUID) : List<TaskDependency> // 查询任务的后续依赖
+    }
+    
+    interface JpaRepository<T, ID>
+}
+
+package "Model Layer (领域模型层)" {
+    class Task {
+        - id : UUID // 任务ID
+        - name : String // 任务名称
+        - type : TaskType // 任务类型
+        - status : TaskStatus // 任务状态
+        - priority : Integer // 优先级
+        - assigneeId : Long // 负责人ID (关联用户服务)
+        - progress : Integer // 进度 (0-100)
+        - inputParams : String // 输入参数 (JSON)
+        - outputResults : String // 输出结果 (JSON)
+        - parentTaskId : UUID // 父任务ID
+        - createdAt : ZonedDateTime // 创建时间
+        - dueAt : ZonedDateTime // 截止时间
+        # onCreate() : void // 持久化前初始化
+    }
+
+    class TaskDependency {
+        - id : UUID // 主键
+        - taskId : UUID // 任务ID
+        - dependencyTaskId : UUID // 依赖的任务ID
+    }
+
+    enum TaskStatus {
+        PENDING // 待处理
+        ASSIGNED // 已指派
+        IN_PROGRESS // 进行中
+        COMPLETED // 已完成
+        BLOCKED // 已阻塞
+        CANCELLED // 已取消
+    }
+
+    enum TaskType {
+        DATA_COLLECTION // 数据采集
+        DATA_PROCESSING // 数据处理
+        QUALITY_CHECK // 质量检查
+        MAP_COMPILATION // 地图编制
+    }
+}
+
+' 关系定义
+TaskController ..> TaskService : <<uses>>\n调用
+TaskServiceImpl ..|> TaskService : <<implements>>\n实现
+TaskServiceImpl ..> TaskRepository : <<uses>>\n调用
+TaskServiceImpl ..> TaskDependencyRepository : <<uses>>\n调用
+
+TaskRepository --|> JpaRepository : <<extends>>\n继承
+TaskDependencyRepository --|> JpaRepository : <<extends>>\n继承
+
+Task "1" *-- "1" TaskStatus : <<has>>\n包含
+Task "1" *-- "1" TaskType : <<has>>\n包含
+TaskDependency "0..*" --> "1" Task : <<links>>\n关联
+
+@enduml

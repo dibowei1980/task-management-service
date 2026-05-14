@@ -1,0 +1,11 @@
+﻿
+  .   ____          _            __ _ _
+ /\\ / ___'_ __ _ _(_)_ __  __ _ \ \ \ \
+( ( )\___ | '_ | '_| | '_ \/ _` | \ \ \ \
+ \\/  ___)| |_)| | | | | || (_| |  ) ) ) )
+  '  |____| .__|_| |_|_| |_\__, | / / / /
+ =========|_|==============|___/=/_/_/_/
+ :: Spring Boot ::                (v3.2.0)
+
+Hibernate: alter table if exists task_dependencies drop constraint if exists UKmcs1b5hhvq7f5w2fh0nvplahu
+Hibernate: alter table if exists task_dependencies add constraint UKmcs1b5hhvq7f5w2fh0nvplahu unique (predecessor_id, successor_id)
