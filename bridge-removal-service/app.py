@@ -22,13 +22,17 @@ def create_app():
     from api.projects import projects_bp
     from api.tasks import tasks_bp
     from api.shapefiles import shapefiles_bp
-    from api.misc import misc_bp
+    from api.upm import upm_bp
+    from api.system import system_bp
+    from api.jobs import jobs_bp
 
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(projects_bp)
     app.register_blueprint(tasks_bp, url_prefix="/api/tasks")
     app.register_blueprint(shapefiles_bp)
-    app.register_blueprint(misc_bp)
+    app.register_blueprint(upm_bp)
+    app.register_blueprint(system_bp)
+    app.register_blueprint(jobs_bp)
 
     with app.app_context():
         from db.models import ProjectModel, JobModel, SessionModel, LocalUserModel

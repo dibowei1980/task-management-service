@@ -1,9 +1,7 @@
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from db.repository import ProjectRepository, model_to_dict
-
-_projects: Dict[str, Dict[str, Any]] = {}
 
 
 def db_model_to_project_dict(model) -> Dict[str, Any]:
@@ -59,24 +57,75 @@ def db_model_to_project_dict(model) -> Dict[str, Any]:
     }
 
 
+def project_dict_to_db(project: Dict[str, Any]) -> Dict[str, Any]:
+    input_params = project.get("input_params", {})
+    if isinstance(input_params, dict):
+        input_params = json.dumps(input_params, ensure_ascii=False)
+    operator_ids = project.get("operator_ids", [])
+    if isinstance(operator_ids, list):
+        operator_ids = json.dumps(operator_ids)
+    inspector_ids = project.get("inspector_ids", [])
+    if isinstance(inspector_ids, list):
+        inspector_ids = json.dumps(inspector_ids)
+    return {
+        "id": project.get("project_id"),
+        "name": project.get("name") or project.get("task_name", ""),
+        "type": project.get("task_type", "BRIDGE_REMOVAL_BATCH"),
+        "status": project.get("status", "PENDING"),
+        "source": project.get("source", "local"),
+        "tms_synced": project.get("tms_synced", False),
+        "input_params": input_params,
+        "callback_url": project.get("callback_url", ""),
+        "category": project.get("category", "PROJECT"),
+        "priority": project.get("priority", 1),
+        "department_id": project.get("department_id"),
+        "department_name": project.get("department_name"),
+        "project_leader_id": project.get("project_leader_id"),
+        "assignee_id": project.get("assignee_id"),
+        "created_by_name": project.get("created_by_name"),
+        "created_department_id": project.get("created_department_id"),
+        "created_department_name": project.get("created_department_name"),
+        "external_system": project.get("external_system"),
+        "external_task_id": project.get("external_task_id"),
+        "external_url": project.get("external_url"),
+        "operator_ids": operator_ids,
+        "inspector_ids": inspector_ids,
+        "job_id": project.get("job_id"),
+        "progress": project.get("progress", 0),
+        "output_results": project.get("output_results"),
+        "parent_task_id": project.get("parent_task_id"),
+    }
+
+
 def get_project(project_id: str) -> Optional[Dict[str, Any]]:
-    project = _projects.get(project_id)
-    if project:
-        return project
     model = ProjectRepository.find_by_id(project_id)
     if model:
-        project = db_model_to_project_dict(model)
-        _projects[project_id] = project
-        return project
+        return db_model_to_project_dict(model)
     return None
 
 
 def get_all_projects() -> Dict[str, Dict[str, Any]]:
-    return _projects
+    models = ProjectRepository.find_all()
+    return {m.id: db_model_to_project_dict(m) for m in models}
 
 
 def set_project(project_id: str, project: Dict[str, Any]):
-    _projects[project_id] = project
+    db_data = project_dict_to_db(project)
+    ProjectRepository.save(db_data)
+
+
+def update_project_fields(project_id: str, updates: Dict[str, Any]):
+    project = get_project(project_id)
+    if not project:
+        return None
+    project.update(updates)
+    db_data = project_dict_to_db(project)
+    ProjectRepository.save(db_data)
+    return project
+
+
+def delete_project(project_id: str) -> bool:
+    return ProjectRepository.delete(project_id)
 
 
 def project_to_task_response(project: Dict[str, Any]) -> Dict[str, Any]:
@@ -116,15 +165,5 @@ def project_to_task_response(project: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def find_project_by_task_id(task_id: str):
-    for project in _projects.values():
-        if project.get("project_id") == task_id:
-            return project
-    return None
-
-
-def load_projects_from_db():
-    db_models = ProjectRepository.find_all()
-    for m in db_models:
-        pid = getattr(m, 'id', None)
-        if pid and pid not in _projects:
-            _projects[pid] = db_model_to_project_dict(m)
+    project = get_project(task_id)
+    return project

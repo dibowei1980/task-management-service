@@ -1,94 +1,35 @@
-import json
-import os
-
-import requests
-from flask import current_app
-
-BUSINESS_TO_PLATFORM_STATUS = {
-    "待定位": "ASSIGNED",
-    "待初检": "IN_PROGRESS",
-    "初检通过": "IN_PROGRESS",
-    "待写回": "IN_PROGRESS",
-    "处理中": "IN_PROGRESS",
-    "完成": "COMPLETED",
-    "失败": "FAILED",
-    "已暂停": "PAUSED",
-    "待处理": "PENDING",
-    "已锁定": "PAUSED",
-    "需修改": "PAUSED",
-}
-
-_task_management_available = False
-
-
-def to_platform_status(business_status):
-    return BUSINESS_TO_PLATFORM_STATUS.get(business_status, business_status)
-
-
-def callback_task_status(task_id, workflow_status, results=None):
-    global _task_management_available
-    if not _task_management_available:
-        current_app.logger.debug(f"Skipped callback for task {task_id}: task-management-service unavailable")
-        return
-    tms_url = os.getenv("TASK_MANAGEMENT_API_URL", "http://localhost:8082/api")
-    tms_token = os.getenv("TASK_MANAGEMENT_AUTH_TOKEN", "internal-automation-token")
-    callback_url = f"{tms_url}/tasks/{task_id}/workflow-status"
-    headers = {
-        "Authorization": f"Bearer {tms_token}",
-        "Content-Type": "application/json"
-    }
-    platform_status = to_platform_status(workflow_status)
-    payload = {
-        "workflowStatus": platform_status,
-        "workflow_status": platform_status,
-    }
-    if results:
-        if isinstance(results, dict):
-            results = json.dumps(results, ensure_ascii=False)
-        payload["results"] = results
-    try:
-        resp = requests.patch(callback_url, json=payload, headers=headers, timeout=10)
-        current_app.logger.info(f"Callback task {task_id} status={platform_status}: {resp.status_code}")
-    except Exception as e:
-        current_app.logger.warning(f"Callback failed for task {task_id} (non-critical): {e}")
-
-
-def check_task_management():
-    global _task_management_available
-    tms_url = os.getenv("TASK_MANAGEMENT_API_URL", "http://localhost:8082/api")
-    tms_token = os.getenv("TASK_MANAGEMENT_AUTH_TOKEN", "internal-automation-token")
-    try:
-        resp = requests.get(
-            f"{tms_url.replace('/api', '')}/actuator/health",
-            headers={"Authorization": f"Bearer {tms_token}"},
-            timeout=5,
-        )
-        _task_management_available = resp.status_code == 200
-    except Exception:
-        _task_management_available = False
-    return _task_management_available
-
-
-def register_with_task_management():
-    global _task_management_available
-    tms_url = os.getenv("TASK_MANAGEMENT_API_URL", "http://localhost:8082/api")
-    brs_port = int(os.getenv("BRIDGE_REMOVAL_PORT", "5050"))
-    brs_url = os.getenv("BRIDGE_REMOVAL_SERVICE_URL", f"http://localhost:{brs_port}")
-    sso_client_id = os.getenv("SSO_CLIENT_ID", "bridge-removal-service")
-    register_url = f"{tms_url}/external-systems/register"
-    payload = {
-        "systemId": "bridge-removal-app",
-        "displayName": "桥梁去除系统",
-        "serviceUrl": brs_url,
-        "ssoClientId": sso_client_id,
-        "dashboardUrl": os.getenv("BRIDGE_DASHBOARD_URL", "http://localhost:5174"),
-        "supportedTaskTypes": ["BRIDGE_REMOVAL_BATCH", "BRIDGE_REMOVAL_UNIT"],
-        "callbackPath": "/api/projects/{id}/execute"
-    }
-    try:
-        resp = requests.post(register_url, json=payload, timeout=10)
-        _task_management_available = True
-        current_app.logger.info(f"Registered with task-management-service: {resp.status_code}")
-    except Exception as e:
-        _task_management_available = False
-        current_app.logger.warning(f"Failed to register with task-management-service (service will run independently): {e}")
+from services.callback_service import callback_task_status, check_task_management, register_with_task_management
+from services.status_mapping import (
+    to_platform_status,
+    compute_status_workloads,
+    should_submit_for_qa,
+    build_progress_payload,
+    WORKFLOW_STATUS_DEFAULT,
+    BUSINESS_TO_PLATFORM_STATUS,
+    PENDING,
+    PAUSED,
+    IN_PROGRESS,
+    FAILED,
+    SUBMITTED_FOR_QA,
+    COMPLETED,
+)
+from services.geo_utils import (
+    expand_bbox, polygon_from_bbox, normalize_bbox,
+    extract_bbox_from_geometry, bbox_from_coordinates,
+    flatten_coordinates, bbox_overlaps,
+)
+from services.shp_utils import (
+    validate_shp_components, list_dom_tiles, DomTileIndex,
+    parse_strategy, bridge_sort_key,
+    read_dbf_records, read_shp_record_bboxes, read_shp_record_geometries,
+)
+from services.tms_api import (
+    parse_input_params, get_api_config, get_task,
+    update_task_status, update_task_input_params,
+    update_task_output_results, set_workflow_status,
+    get_subtasks, delete_task, clear_dependencies,
+    create_dependencies, report_progress,
+    init_project_roles_and_permissions,
+)
+from services.dependency import build_dependency_graph, merge_step_result, filter_operation_subtasks
+from services.simulation import simulate_end_to_end_flow, simulate_end_to_end_flow_local

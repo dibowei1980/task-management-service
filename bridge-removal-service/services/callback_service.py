@@ -4,25 +4,9 @@ import os
 import requests
 from flask import current_app
 
-BUSINESS_TO_PLATFORM_STATUS = {
-    "待定位": "ASSIGNED",
-    "待初检": "IN_PROGRESS",
-    "初检通过": "IN_PROGRESS",
-    "待写回": "IN_PROGRESS",
-    "处理中": "IN_PROGRESS",
-    "完成": "COMPLETED",
-    "失败": "FAILED",
-    "已暂停": "PAUSED",
-    "待处理": "PENDING",
-    "已锁定": "PAUSED",
-    "需修改": "PAUSED",
-}
+from services.status_mapping import to_platform_status
 
 _task_management_available = False
-
-
-def to_platform_status(business_status):
-    return BUSINESS_TO_PLATFORM_STATUS.get(business_status, business_status)
 
 
 def callback_task_status(task_id, workflow_status, results=None):

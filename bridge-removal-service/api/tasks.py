@@ -9,11 +9,12 @@ from flask import Blueprint, jsonify, request
 
 from api.auth import require_local_auth, require_auth, require_permission
 from services.project_service import (
-    get_project, get_all_projects, set_project,
-    project_to_task_response, find_project_by_task_id,
+    get_project, project_to_task_response, find_project_by_task_id,
+    update_project_fields,
 )
 from services.job_service import create_job_record, update_job_status, find_latest_job_by_task
 from services.callback_service import callback_task_status
+from services.status_mapping import to_platform_status
 
 from bridge_removal_task import (
     BridgeRemovalOrchestratorTask,
@@ -74,7 +75,6 @@ def update_task(task_id: str):
 @tasks_bp.route("/<task_id>/workflow-status", methods=["PATCH"])
 @require_local_auth
 def update_workflow_status(task_id: str):
-    from db.repository import ProjectRepository
     project = get_project(task_id)
     if not project:
         return jsonify({"error": "Task not found"}), 404
@@ -122,13 +122,10 @@ def update_workflow_status(task_id: str):
 
     project["input_params"] = input_params
 
-    PLATFORM_STATUS_MAP = {
-        "PENDING": "PENDING", "PAUSED": "PAUSED", "IN_PROGRESS": "IN_PROGRESS",
-        "PENDING_QA": "PENDING_QA", "NEEDS_REVISION": "NEEDS_REVISION",
-        "PENDING_WRITEBACK": "PENDING_WRITEBACK", "COMPLETED": "COMPLETED",
-        "ASSIGNED": "ASSIGNED", "RECEIVED": "RECEIVED", "FAILED": "FAILED",
-    }
-    project["status"] = PLATFORM_STATUS_MAP.get(workflow_status, project.get("status", "PENDING"))
+    from services.status_mapping import PENDING, PAUSED, IN_PROGRESS, FAILED, SUBMITTED_FOR_QA, COMPLETED
+    VALID_PLATFORM_STATUSES = {PENDING, PAUSED, IN_PROGRESS, FAILED, SUBMITTED_FOR_QA, COMPLETED,
+                               "PENDING_QA", "NEEDS_REVISION", "PENDING_WRITEBACK", "ASSIGNED", "RECEIVED"}
+    project["status"] = workflow_status if workflow_status in VALID_PLATFORM_STATUSES else project.get("status", PENDING)
 
     if workflow_status == "COMPLETED":
         project["progress"] = 100
@@ -136,10 +133,9 @@ def update_workflow_status(task_id: str):
 
     callback_task_status(task_id, workflow_status, results=project.get("output_results") if workflow_status == "COMPLETED" else None)
 
-    ProjectRepository.save({
-        "id": task_id,
+    update_project_fields(task_id, {
         "status": project["status"],
-        "input_params": json.dumps(input_params, ensure_ascii=False),
+        "input_params": input_params,
         "progress": project.get("progress", 0),
         "output_results": project.get("output_results"),
     })
@@ -162,8 +158,8 @@ def dom_locate(task_id: str):
     dom_tiles = []
     for dom_path in source_doms:
         try:
-            from bridge_removal_task import _DomTileIndex, _dom_tile_info
-            info = _dom_tile_info(dom_path)
+            from services.shp_utils import DomTileIndex, dom_tile_info
+            info = dom_tile_info(dom_path)
             dom_tiles.append({
                 "path": dom_path,
                 "bounds": info.get("bounds"),
@@ -266,6 +262,42 @@ def api_preprocess_generate(task_id: str):
             update_job_status(job_id, "COMPLETED", results=results)
         except Exception as e:
             update_job_status(job_id, "FAILED", error=str(e))
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"job_id": job_id, "status": "STARTED"})
+
+
+@tasks_bp.route("/<task_id>/execute", methods=["POST"])
+@require_auth
+@require_permission("task:execute")
+def execute_task(task_id: str):
+    body = request.get_json(force=True, silent=True) or {}
+    task_type = body.get("task_type", "")
+    input_params = body.get("input_params", {})
+
+    if task_type not in ("BRIDGE_REMOVAL_BATCH", "BRIDGE_REMOVAL_UNIT"):
+        return jsonify({"error": f"不支持的任务类型: {task_type}"}), 400
+
+    job_id = create_job_record(task_id, task_type, input_params)
+
+    def _run():
+        try:
+            update_job_status(job_id, "IN_PROGRESS")
+            if task_type == "BRIDGE_REMOVAL_BATCH":
+                task = BridgeRemovalOrchestratorTask(task_id=task_id, input_params=input_params)
+            else:
+                task = BridgeRemovalUnitProcessorTask(task_id=task_id, input_params=input_params)
+            task.run()
+            results = {
+                "task_id": task_id,
+                "status": task.get_status(),
+                "results": task.get_results(),
+            }
+            update_job_status(job_id, task.get_status(), results=results)
+        except Exception as e:
+            error_msg = str(e)
+            traceback_str = traceback.format_exc()
+            update_job_status(job_id, "FAILED", error=f"{error_msg}\n{traceback_str}")
 
     threading.Thread(target=_run, daemon=True).start()
     return jsonify({"job_id": job_id, "status": "STARTED"})
@@ -442,7 +474,6 @@ def inpaint_file(task_id: str):
 @require_local_auth
 @require_permission("task:execute")
 def merge_results(task_id: str):
-    from db.repository import ProjectRepository
     body = request.get_json(force=True, silent=True) or {}
     input_params = body.get("input_params", {})
 
@@ -457,9 +488,7 @@ def merge_results(task_id: str):
             update_job_status(job_id, "IN_PROGRESS")
             result = run_write_back_to_dom(task_id, input_params or project.get("input_params", {}))
             update_job_status(job_id, "COMPLETED", results=result)
-            _projects = get_all_projects()
-            _projects[project["project_id"]]["status"] = "COMPLETED"
-            ProjectRepository.save({"id": project["project_id"], "status": "COMPLETED"})
+            update_project_fields(project["project_id"], {"status": "COMPLETED"})
             callback_task_status(task_id, "COMPLETED", results=result)
         except Exception as e:
             update_job_status(job_id, "FAILED", error=str(e))
