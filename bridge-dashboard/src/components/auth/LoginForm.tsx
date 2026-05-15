@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { bridgeAuthService, bridgeSsoService } from '../../services/bridgeService';
 import { BridgeUser } from '../../types';
+import { authStorage } from '../../utils/storage';
 
 export const LoginForm: React.FC = () => {
   const [username, setUsername] = useState('');
@@ -16,7 +17,9 @@ export const LoginForm: React.FC = () => {
   useEffect(() => {
     const token = searchParams.get('bridge_token');
     if (token) {
-      localStorage.setItem('bridge_token', token);
+      authStorage.setToken(token);
+      const cleanUrl = window.location.pathname + window.location.hash;
+      window.history.replaceState({}, '', cleanUrl);
       bridgeAuthService.getMe().then((me) => {
         const bridgeUser: BridgeUser = {
           userId: me.userId,
@@ -32,7 +35,7 @@ export const LoginForm: React.FC = () => {
         navigate('/projects');
       }).catch(() => {
         setError('SSO 登录验证失败，请重试。');
-        localStorage.removeItem('bridge_token');
+        authStorage.removeToken();
       });
       return;
     }

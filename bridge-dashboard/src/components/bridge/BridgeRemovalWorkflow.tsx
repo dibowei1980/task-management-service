@@ -3,61 +3,11 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { BridgeTask, BridgeUser } from '../../types';
 import { bridgeTaskService, bridgeProjectService, bridgeUserService } from '../../services/bridgeService';
 import { useAuth } from '../../context/AuthContext';
-
-type WorkflowStatus =
-  | '全部'
-  | '待处理'
-  | '处理中'
-  | '待初检'
-  | '需修改'
-  | '待写回'
-  | '完成'
-  | '已锁定';
-
-const WORKFLOW_TABS: Array<{ key: WorkflowStatus; label: string }> = [
-  { key: '全部', label: '全部' },
-  { key: '待处理', label: '待处理' },
-  { key: '处理中', label: '处理中' },
-  { key: '待初检', label: '待初检' },
-  { key: '待写回', label: '待写回' },
-  { key: '需修改', label: '需修改' },
-  { key: '已锁定', label: '已锁定' },
-  { key: '完成', label: '完成' }
-];
-
-const parseJson = (raw?: string): Record<string, unknown> => {
-  if (!raw) return {};
-  try {
-    return JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    return {};
-  }
-};
-
-const getWorkflowStatus = (task: BridgeTask): string | null => {
-  const input = parseJson(task.inputParams);
-  const v = input['workflow_status'];
-  return typeof v === 'string' && v ? v : null;
-};
-
-type PreprocessSegmentItem = {
-  path?: string;
-  imagePath?: string;
-  jsonPath?: string;
-};
-
-const buildMaskPath = (jsonPath: string, segmentName?: string) => {
-  const normalized = (jsonPath || '').replace(/\\/g, '/');
-  if (!normalized) return '';
-  const idx = normalized.lastIndexOf('/');
-  if (idx < 0) return '';
-  const dir = normalized.slice(0, idx);
-  const maskDir = dir.replace(/\/segments$/i, '/masks');
-  const base = (segmentName || '').replace(/\\/g, '/').split('/').pop() || '';
-  const name = base.replace(/(\.json|\.png|\.tif|\.tiff)$/i, '');
-  if (!name) return '';
-  return `${maskDir}/${name}/${name}_mask_with_shadow.png`;
-};
+import { parseJson } from '../../utils/json';
+import { buildMaskPath } from '../../utils/pathBuilders';
+import { getErrorMessage } from '../../utils/taskHelpers';
+import { WORKFLOW_TABS, getWorkflowStatus, getWorkflowStatusLabel } from './workflow/types';
+import type { WorkflowStatus, PreprocessSegmentItem } from './workflow/types';
 
 export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projectId }) => {
   const params = useParams();
@@ -100,20 +50,6 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
     });
     return map;
   }, [userOptions]);
-
-  const getErrorMessage = (err: unknown, fallback: string) => {
-    if (err instanceof Error && err.message) return err.message;
-    const error = err as { response?: { status?: number; data?: { message?: string; error?: string } } };
-    const status = error?.response?.status;
-    const data = error?.response?.data;
-    const message = data?.message;
-    const errorCode = data?.error;
-    if (status === 403) return (typeof message === 'string' && message) ? message : '无权限执行该操作';
-    if (status === 404) return (typeof message === 'string' && message) ? message : '项目不存在或已被删除';
-    if (typeof message === 'string' && message) return message;
-    if (typeof errorCode === 'string' && errorCode) return errorCode;
-    return fallback;
-  };
 
   const loadProject = useCallback(async () => {
     if (!effectiveProjectId) {
@@ -204,11 +140,6 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
     const width = getBridgeWidth(task);
     if (length === '-' && width === '-') return '-';
     return `${length}/${width}`;
-  };
-
-  const getWorkflowStatusLabel = (workflowStatus: string | null): string => {
-    if (!workflowStatus) return '-';
-    return workflowStatus;
   };
 
   const getWorkflowStatusForTask = (task: BridgeTask): string | null => {

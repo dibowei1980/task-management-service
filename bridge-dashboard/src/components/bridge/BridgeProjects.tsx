@@ -6,65 +6,10 @@ import { bridgeTaskService, bridgeProjectService, bridgeSystemService } from '..
 import { bridgeUserService } from '../../services/bridgeService';
 import { useAuth } from '../../context/AuthContext';
 import { BridgeProjectParamsModal } from './BridgeProjectParamsModal';
-
-const BRIDGE_APP_EXTERNAL_SYSTEM = 'bridge-removal-app';
-const BRIDGE_PROJECT_TYPES = new Set(['BRIDGE_REMOVAL_BATCH', 'BRIDGE_REMOVAL_UNIT']);
-type DecomposeOrderStrategy = 'ASC' | 'DESC';
-type DecomposeOverwriteStrategy = 'OVERWRITE' | 'SKIP';
-
-const parseJson = (raw?: string): Record<string, unknown> => {
-  if (!raw) return {};
-  try {
-    return JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    return {};
-  }
-};
-
-const getTaskFailureMessage = (project: BridgeTask): string => {
-  const out = project.outputResults;
-  if (typeof out === 'string') {
-    const s = out.trim();
-    if (!s) return '分解失败';
-    try {
-      const obj = JSON.parse(s) as { error?: unknown; raw?: unknown };
-      if (obj?.error != null && String(obj.error).trim()) return String(obj.error);
-      if (obj?.raw != null && String(obj.raw).trim()) return String(obj.raw);
-      return s;
-    } catch {
-      return s;
-    }
-  }
-  if (out && typeof out === 'object') {
-    const obj = out as { error?: unknown; raw?: unknown };
-    if (obj?.error != null && String(obj.error).trim()) return String(obj.error);
-    if (obj?.raw != null && String(obj.raw).trim()) return String(obj.raw);
-    try {
-      return JSON.stringify(out);
-    } catch {
-      return '分解失败';
-    }
-  }
-  return '分解失败';
-};
-
-type FeedbackItem = { stage?: string; result?: string; message?: string; at?: string; by?: string };
-
-const parseFeedbackItems = (input: Record<string, unknown>): FeedbackItem[] => {
-  const raw = input['qa_feedback'];
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .map(item => (item && typeof item === 'object') ? (item as Record<string, unknown>) : null)
-    .filter((v): v is Record<string, unknown> => v != null)
-    .map(v => ({
-      stage: typeof v.stage === 'string' ? v.stage : undefined,
-      result: typeof v.result === 'string' ? v.result : undefined,
-      message: typeof v.message === 'string' ? v.message : undefined,
-      at: typeof v.at === 'string' ? v.at : undefined,
-      by: typeof v.by === 'string' ? v.by : undefined,
-    }))
-    .filter(v => typeof v.message === 'string' && v.message.trim().length > 0);
-};
+import { parseJson } from '../../utils/json';
+import { getTaskFailureMessage } from '../../utils/taskHelpers';
+import { BRIDGE_APP_EXTERNAL_SYSTEM, BRIDGE_PROJECT_TYPES, parseFeedbackItems } from './projects/types';
+import type { DecomposeOrderStrategy, DecomposeOverwriteStrategy, FeedbackItem } from './projects/types';
 
 export const BridgeProjects: React.FC = () => {
   const { user } = useAuth();

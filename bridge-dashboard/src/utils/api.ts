@@ -1,5 +1,6 @@
 import axios, { AxiosError, InternalAxiosRequestConfig, AxiosHeaders, AxiosResponse } from 'axios';
 import { BRIDGE_SERVICE_URL } from './constants';
+import { authStorage } from './storage';
 
 export const bridgeApi = axios.create({
   baseURL: BRIDGE_SERVICE_URL,
@@ -9,7 +10,7 @@ export const bridgeApi = axios.create({
 });
 
 bridgeApi.interceptors.request.use((config: InternalAxiosRequestConfig) => {
-  const token = localStorage.getItem('bridge_token');
+  const token = authStorage.getToken();
   if (token) {
     const headers = config.headers ?? new AxiosHeaders();
     headers.set('Authorization', `Bearer ${token}`);
@@ -44,8 +45,7 @@ bridgeApi.interceptors.response.use(
   },
   (error: AxiosError) => {
     if (error.response?.status === 401) {
-      localStorage.removeItem('bridge_token');
-      localStorage.removeItem('bridge_user');
+      authStorage.clear();
       window.location.href = '/';
       return Promise.reject(error);
     }

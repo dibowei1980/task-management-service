@@ -104,6 +104,8 @@ models/
 
 #===== trae =====
 .trae/
+.trae/documents/
+.trae/rules/
 .trae-cn/
 docs/ECC-Skill推荐报告.md
 docs/BRS-需求说明规格书.md
@@ -113,3 +115,6 @@ docs/BRS-代码审查任务清单.md
 docs/◐BRS-代码审查任务清单.md
 docs/◐BRS-API设计审查报告.md
 docs/✅BRS-项目结构优化方案.md
+bridge-removal-service/start5050.ps1
+bridge-removal-service/stop5050.ps1
+docs/BRS-前端审查报告.md

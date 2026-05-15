@@ -61,11 +61,22 @@ if (-not $env:BRS_ALLOWED_ROOTS) {
 }
 
 $port = if ($env:BRIDGE_REMOVAL_PORT) { $env:BRIDGE_REMOVAL_PORT } else { "5050" }
+
+$VenvDir = Join-Path $ScriptDir "venv"
+$VenvPython = Join-Path $VenvDir "Scripts\python.exe"
+if (Test-Path $VenvPython) {
+    Write-Host "[BRS] 使用虚拟环境: $VenvDir" -ForegroundColor Cyan
+    $PythonCmd = $VenvPython
+} else {
+    Write-Host "[WARN] 未找到 venv 虚拟环境 ($VenvDir)，回退使用系统 python" -ForegroundColor Yellow
+    $PythonCmd = "python"
+}
+
 Write-Host "[BRS] 启动服务 http://0.0.0.0:$port" -ForegroundColor Green
 Write-Host "[BRS] 按 Ctrl+C 停止服务" -ForegroundColor Gray
 
 try {
-    python app.py
+    & $PythonCmd app.py
 }
 finally {
     Pop-Location

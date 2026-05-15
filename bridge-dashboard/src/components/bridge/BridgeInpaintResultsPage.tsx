@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { bridgeTaskService } from '../../services/bridgeService';
-import { BRIDGE_SERVICE_URL } from '../../utils/constants';
 
 type InpaintStatusPayload = {
   jobId?: string;
@@ -13,11 +12,45 @@ type InpaintStatusPayload = {
   originalImagePath?: string;
 };
 
-const buildFileUrl = (taskId: string, jobId: string, path: string) => {
-  const token = localStorage.getItem('bridge_token');
-  const tokenQuery = token ? `&token=${encodeURIComponent(token)}` : '';
-  return `${BRIDGE_SERVICE_URL}/api/v1/tasks/${taskId}/inpaint-file?jobId=${encodeURIComponent(jobId)}&path=${encodeURIComponent(path)}${tokenQuery}`;
-};
+function useBlobUrlMap(taskId: string, jobId: string) {
+  const [urlMap, setUrlMap] = useState<Map<string, string>>(new Map());
+  const blobRefs = useRef<Set<string>>(new Set());
+  const loadingRefs = useRef<Set<string>>(new Set());
+
+  const getBlobUrl = useCallback((path: string): string => {
+    if (!path) return '';
+    return urlMap.get(path) || '';
+  }, [urlMap]);
+
+  const loadBlobUrl = useCallback(async (path: string) => {
+    if (!taskId || !jobId || !path) return;
+    if (urlMap.has(path) || loadingRefs.current.has(path)) return;
+    loadingRefs.current.add(path);
+    try {
+      const response = await bridgeTaskService.inpaintFile(taskId, jobId, path);
+      const blob = new Blob([response.data as ArrayBuffer], { type: 'image/png' });
+      const blobUrl = URL.createObjectURL(blob);
+      blobRefs.current.add(blobUrl);
+      setUrlMap(prev => {
+        const next = new Map(prev);
+        next.set(path, blobUrl);
+        return next;
+      });
+    } catch {
+    } finally {
+      loadingRefs.current.delete(path);
+    }
+  }, [taskId, jobId, urlMap]);
+
+  useEffect(() => {
+    return () => {
+      blobRefs.current.forEach(url => URL.revokeObjectURL(url));
+      blobRefs.current.clear();
+    };
+  }, []);
+
+  return { getBlobUrl, loadBlobUrl };
+}
 
 type BridgeInpaintResultsPageProps = {
   taskId?: string;
@@ -49,6 +82,7 @@ export const BridgeInpaintResultsPage: React.FC<BridgeInpaintResultsPageProps> =
   const [originalPath, setOriginalPath] = useState<string | null>(null);
   const [outputPaths, setOutputPaths] = useState<string[]>([]);
   const [selectedIndex, setSelectedIndex] = useState<number>(0);
+  const { getBlobUrl, loadBlobUrl } = useBlobUrlMap(taskId, jobId);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [loadingAction, setLoadingAction] = useState(false);
@@ -130,6 +164,11 @@ export const BridgeInpaintResultsPage: React.FC<BridgeInpaintResultsPageProps> =
   const canConfirm = Boolean(taskId && jobId && selectedResult);
   const canRetry = Boolean(taskId && jobId);
 
+  useEffect(() => {
+    if (originalPath) loadBlobUrl(originalPath);
+    outputPaths.forEach(p => loadBlobUrl(p));
+  }, [originalPath, outputPaths, loadBlobUrl]);
+
   const handleRetry = useCallback(async () => {
     if (!canRetry) return;
     if (onRetry) {
@@ -173,7 +212,7 @@ export const BridgeInpaintResultsPage: React.FC<BridgeInpaintResultsPageProps> =
         if (onConfirmed) {
           onConfirmed();
         } else if (window.opener) {
-          window.opener.postMessage({ type: 'inpaint_result_confirmed', taskId }, '*');
+          window.opener.postMessage({ type: 'inpaint_result_confirmed', taskId }, window.location.origin);
         }
         if (onClose) {
           onClose();
@@ -262,8 +301,8 @@ export const BridgeInpaintResultsPage: React.FC<BridgeInpaintResultsPageProps> =
     transformOrigin: '0 0',
   }), [offset, scale]);
 
-  const originalUrl = taskId && jobId && originalPath ? buildFileUrl(taskId, jobId, originalPath) : '';
-  const resultUrl = taskId && jobId && selectedResult ? buildFileUrl(taskId, jobId, selectedResult) : '';
+  const originalUrl = taskId && jobId && originalPath ? getBlobUrl(originalPath) : '';
+  const resultUrl = taskId && jobId && selectedResult ? getBlobUrl(selectedResult) : '';
 
   useEffect(() => {
     if (!imageSize) return;
@@ -328,7 +367,7 @@ export const BridgeInpaintResultsPage: React.FC<BridgeInpaintResultsPageProps> =
           <div className="text-sm font-medium text-gray-700">成果列表</div>
           <div className="grid grid-cols-2 md:grid-cols-1 lg:grid-cols-2 gap-3">
             {outputPaths.map((path, idx) => {
-              const url = taskId && jobId ? buildFileUrl(taskId, jobId, path) : '';
+              const url = taskId && jobId ? getBlobUrl(path) : '';
               const active = idx === selectedIndex;
               return (
                 <button
