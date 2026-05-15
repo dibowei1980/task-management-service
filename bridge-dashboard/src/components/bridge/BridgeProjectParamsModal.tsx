@@ -22,7 +22,7 @@ const parseJson = (raw?: string): Record<string, unknown> => {
 export const BridgeProjectParamsModal: React.FC<Props> = ({ project, onClose, onSaved }) => {
   const { user } = useAuth();
   const roles = user?.permissions || [];
-  const [projectLeaderId, setProjectLeaderId] = useState<string>(project.assignee_id || '');
+  const [projectLeaderId, setProjectLeaderId] = useState<string>(project.assigneeId || '');
   const [projectManagers, setProjectManagers] = useState<BridgeUser[]>([]);
   const [saving, setSaving] = useState(false);
   const [shpFilePath, setShpFilePath] = useState('');
@@ -55,11 +55,11 @@ export const BridgeProjectParamsModal: React.FC<Props> = ({ project, onClose, on
   }, [canEditProjectLeader]);
 
   useEffect(() => {
-    const input = parseJson(project.input_params);
+    const input = parseJson(project.inputParams);
     setShpFilePath(typeof input['shp_file_path'] === 'string' ? String(input['shp_file_path']) : '');
     setDomDir(typeof input['dom_dir'] === 'string' ? String(input['dom_dir']) : '');
     setIntermediateRoot(typeof input['intermediate_root'] === 'string' ? String(input['intermediate_root']) : '');
-  }, [project.input_params]);
+  }, [project.inputParams]);
 
   useEffect(() => {
     let disposed = false;
@@ -103,11 +103,11 @@ export const BridgeProjectParamsModal: React.FC<Props> = ({ project, onClose, on
 
       const payload: Partial<BridgeTask> = {};
       if (canEditProjectLeader) {
-        payload.project_leader_id = projectLeaderId ? projectLeaderId : null;
+        payload.projectLeaderId = projectLeaderId ? projectLeaderId : null;
       }
 
       if (!paramLocked) {
-        const input = parseJson(project.input_params);
+        const input = parseJson(project.inputParams);
         input['shp_file_path'] = shpFilePath.trim();
         input['dom_dir'] = domDir.trim();
         if (intermediateRoot.trim()) {
@@ -115,7 +115,7 @@ export const BridgeProjectParamsModal: React.FC<Props> = ({ project, onClose, on
         } else if ('intermediate_root' in input) {
           delete input['intermediate_root'];
         }
-        payload.input_params = JSON.stringify(input);
+        payload.inputParams = JSON.stringify(input);
       }
 
       if (Object.keys(payload).length === 0) {
@@ -126,11 +126,12 @@ export const BridgeProjectParamsModal: React.FC<Props> = ({ project, onClose, on
       onSaved();
     } catch (err) {
       console.error(err);
-      const error = err as { response?: { status?: number; data?: { message?: string } } };
+      const error = err as { userMessage?: string; response?: { status?: number; data?: { message?: string } } };
+      const userMsg = error?.userMessage;
       if (error?.response?.status === 403) {
-        alert(error?.response?.data?.message || '仅创建部门可修改');
+        alert(userMsg || error?.response?.data?.message || '仅创建部门可修改');
       } else {
-        alert(error?.response?.data?.message || '保存失败');
+        alert(userMsg || error?.response?.data?.message || '保存失败');
       }
     } finally {
       setSaving(false);
@@ -187,7 +188,7 @@ export const BridgeProjectParamsModal: React.FC<Props> = ({ project, onClose, on
               <select className="w-full border rounded p-2" value={projectLeaderId} onChange={e => setProjectLeaderId(e.target.value)}>
                 <option value="">-- 未指定 --</option>
                 {projectManagers.map(u => (
-                  <option key={u.user_id} value={u.user_id}>{u.username}</option>
+                  <option key={u.userId} value={u.userId}>{u.username}</option>
                 ))}
               </select>
             </div>

@@ -2,9 +2,17 @@ import json
 import os
 import secrets
 
-from flask import Flask
+from flask import Flask, request
 
 from db import db
+
+
+def _camel_to_snake_request():
+    if request.content_type and "json" in request.content_type:
+        body = request.get_json(force=True, silent=True)
+        if isinstance(body, dict):
+            from api.utils import to_snake
+            request._cached_json = (to_snake(body), True)
 
 
 def create_app():
@@ -18,17 +26,20 @@ def create_app():
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     db.init_app(app)
 
+    app.before_request(_camel_to_snake_request)
+
     from api.auth import auth_bp
     from api.projects import projects_bp
     from api.tasks import tasks_bp
     from api.shapefiles import shapefiles_bp
     from api.upm import upm_bp
-    from api.system import system_bp
+    from api.system import system_bp, health_bp
     from api.jobs import jobs_bp
 
-    app.register_blueprint(auth_bp, url_prefix="/api/auth")
+    app.register_blueprint(health_bp)
+    app.register_blueprint(auth_bp)
     app.register_blueprint(projects_bp)
-    app.register_blueprint(tasks_bp, url_prefix="/api/tasks")
+    app.register_blueprint(tasks_bp)
     app.register_blueprint(shapefiles_bp)
     app.register_blueprint(upm_bp)
     app.register_blueprint(system_bp)
@@ -51,7 +62,6 @@ def _migrate_local_users_to_db():
         return
     if LocalUserRepository.find_all():
         return
-    import hashlib
     if os.path.exists(LOCAL_USERS_FILE):
         with open(LOCAL_USERS_FILE, "r", encoding="utf-8") as f:
             users = json.load(f)

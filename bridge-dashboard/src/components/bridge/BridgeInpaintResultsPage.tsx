@@ -16,7 +16,7 @@ type InpaintStatusPayload = {
 const buildFileUrl = (taskId: string, jobId: string, path: string) => {
   const token = localStorage.getItem('bridge_token');
   const tokenQuery = token ? `&token=${encodeURIComponent(token)}` : '';
-  return `${BRIDGE_SERVICE_URL}/api/tasks/${taskId}/inpaint-file?jobId=${encodeURIComponent(jobId)}&path=${encodeURIComponent(path)}${tokenQuery}`;
+  return `${BRIDGE_SERVICE_URL}/api/v1/tasks/${taskId}/inpaint-file?jobId=${encodeURIComponent(jobId)}&path=${encodeURIComponent(path)}${tokenQuery}`;
 };
 
 type BridgeInpaintResultsPageProps = {

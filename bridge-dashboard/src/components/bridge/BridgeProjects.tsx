@@ -22,7 +22,7 @@ const parseJson = (raw?: string): Record<string, unknown> => {
 };
 
 const getTaskFailureMessage = (project: BridgeTask): string => {
-  const out = project.output_results;
+  const out = project.outputResults;
   if (typeof out === 'string') {
     const s = out.trim();
     if (!s) return '分解失败';
@@ -78,9 +78,9 @@ export const BridgeProjects: React.FC = () => {
   const canCreateProject = permissions.includes('project:create');
   const canReadUsers = permissions.includes('user:read');
   const canEditProject = permissions.includes('project:update');
-  const userId = user?.user_id;
+  const userId = user?.userId;
   const userName = user?.username;
-  const userDepartmentId = user?.department_id || undefined;
+  const userDepartmentId = user?.departmentId || undefined;
   const shouldTrustParticipantProjectScope = canReadParticipantProjects
     && !canReadGlobalProjects
     && !canReadDepartmentProjects
@@ -153,17 +153,17 @@ export const BridgeProjects: React.FC = () => {
       .filter(project => {
         if (canReadGlobalProjects) return true;
         if (canReadDepartmentProjects && userDepartmentId) {
-          if (project.department_id === userDepartmentId || project.created_department_id === userDepartmentId) return true;
+          if (project.departmentId === userDepartmentId || project.createdDepartmentId === userDepartmentId) return true;
         }
         if (canReadOwnProjects) {
-          if (userId && (project.project_leader_id === userId || project.assignee_id === userId)) return true;
-          if (userName && project.created_by_name === userName) return true;
-          if (userId && project.created_by_name === userId) return true;
+          if (userId && (project.projectLeaderId === userId || project.assigneeId === userId)) return true;
+          if (userName && project.createdByName === userName) return true;
+          if (userId && project.createdByName === userId) return true;
         }
         if (canReadParticipantProjects && userId) {
-          if (!Array.isArray(project.operator_ids)) {
+          if (!Array.isArray(project.operatorIds)) {
             if (shouldTrustParticipantProjectScope) return true;
-          } else if (project.operator_ids.includes(userId)) {
+          } else if (project.operatorIds.includes(userId)) {
             return true;
           }
         }
@@ -205,7 +205,7 @@ export const BridgeProjects: React.FC = () => {
         if (disposed) return;
         setDecomposeProgressTask(BridgeTask);
 
-        const input = parseJson(BridgeTask?.input_params);
+        const input = parseJson(BridgeTask?.inputParams);
         const feedback = parseFeedbackItems(input);
         setDecomposeProgressLogs(feedback);
 
@@ -250,12 +250,12 @@ export const BridgeProjects: React.FC = () => {
   }, [loadProjects]);
 
   useEffect(() => {
-    if (user?.login_type === 'local') {
+    if (user?.loginType === 'local') {
       bridgeSystemService.getSystemStatus().then(s => {
-        setIsLocalMode(!s.sso_connected);
+        setIsLocalMode(!s.ssoConnected);
       });
     }
-  }, [user?.login_type]);
+  }, [user?.loginType]);
 
   useEffect(() => {
     bridgeUserService.getDepartments().then(setDepartments).catch(() => {});
@@ -270,8 +270,8 @@ export const BridgeProjects: React.FC = () => {
     bridgeUserService.getUsers().then(users => {
       const map: Record<string, string> = {};
       users.forEach((u: BridgeUser) => {
-        if (u?.user_id) {
-          map[u.user_id] = u.username;
+        if (u?.userId) {
+          map[u.userId] = u.username;
         }
       });
       setUserNameById(map);
@@ -313,7 +313,7 @@ export const BridgeProjects: React.FC = () => {
   };
 
   const openDecomposeModal = (project: BridgeTask) => {
-    const input = parseJson(project.input_params);
+    const input = parseJson(project.inputParams);
     const order = typeof input['decompose_order_strategy'] === 'string' ? String(input['decompose_order_strategy']).toUpperCase() : '';
     const overwrite = typeof input['decompose_overwrite_strategy'] === 'string' ? String(input['decompose_overwrite_strategy']).toUpperCase() : '';
     setDecomposeOrderStrategy(order === 'DESC' ? 'DESC' : 'ASC');
@@ -330,7 +330,7 @@ export const BridgeProjects: React.FC = () => {
     
     try {
       const project = await bridgeTaskService.getTask(projectId);
-      const input = parseJson(project?.input_params);
+      const input = parseJson(project?.inputParams);
       input['decompose_order_strategy'] = decomposeOrderStrategy;
       input['decompose_overwrite_strategy'] = decomposeOverwriteStrategy;
       await bridgeTaskService.updateTask(projectId, { inputParams: JSON.stringify(input) });
@@ -347,7 +347,7 @@ export const BridgeProjects: React.FC = () => {
         type: 'BRIDGE_REMOVAL_BATCH',
         status: 'PENDING',
         priority: 1,
-        created_by_name: user?.username || user?.user_id || undefined,
+        createdByName: user?.username || user?.userId || undefined,
         projectId,
         parentTaskId: projectId,
         inputParams: JSON.stringify(decomposeInput)
@@ -383,7 +383,7 @@ export const BridgeProjects: React.FC = () => {
 
   const openParticipantModal = (project: BridgeTask) => {
     setParticipantProject(project);
-    setParticipantIds(project.operator_ids || []);
+    setParticipantIds(project.operatorIds || []);
   };
 
   const saveParticipants = async () => {
@@ -456,9 +456,9 @@ export const BridgeProjects: React.FC = () => {
         externalSystem: BRIDGE_APP_EXTERNAL_SYSTEM,
         externalTaskId,
         departmentId: canAssignProjectDepartment ? (departmentId || null) : undefined,
-        created_by_name: user?.username || null,
-        created_department_id: user?.department_id || null,
-        created_department_name: user?.department_name || null,
+        createdByName: user?.username || null,
+        createdDepartmentId: user?.departmentId || null,
+        createdDepartmentName: user?.departmentName || null,
         project_leader_id: projectLeaderId || null,
         input_params: JSON.stringify(inputParams)
       });
@@ -514,7 +514,7 @@ export const BridgeProjects: React.FC = () => {
 
   const rows = useMemo(() => {
     return projects.map(p => {
-      const input = parseJson(p.input_params);
+      const input = parseJson(p.inputParams);
       const vector = typeof input['shp_file_path'] === 'string' ? (input['shp_file_path'] as string) : '';
       const domDir = typeof input['dom_dir'] === 'string' ? (input['dom_dir'] as string) : '';
       const domCount = typeof input['dom_count'] === 'number'
@@ -565,7 +565,7 @@ export const BridgeProjects: React.FC = () => {
                   >
                     {r.project.name}
                   </button>
-                  {r.project.source === 'local' && !r.project.tms_synced && (
+                  {r.project.source === 'local' && !r.project.tmsSynced && (
                     <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800">
                       本地
                     </span>
@@ -574,15 +574,15 @@ export const BridgeProjects: React.FC = () => {
                 <td className="px-6 py-4 text-sm text-gray-600">
                   <div className="leading-tight">
                     <div>
-                      {(departments.find(d => d.id === r.project.created_department_id)?.departmentName
-                        || r.project.created_department_name
-                        || r.project.created_department_id
+                      {(departments.find(d => d.id === r.project.createdDepartmentId)?.departmentName
+                        || r.project.createdDepartmentName
+                        || r.project.createdDepartmentId
                         || '-') as string}
                     </div>
-                    <div className="text-xs text-gray-500 mt-1">{r.project.created_by_name || '-'}</div>
-                    {r.project.created_at && (
+                    <div className="text-xs text-gray-500 mt-1">{r.project.createdByName || '-'}</div>
+                    {r.project.createdAt && (
                       <div className="text-xs text-gray-400 mt-1">
-                        {new Date(r.project.created_at).toLocaleString()}
+                        {new Date(r.project.createdAt).toLocaleString()}
                       </div>
                     )}
                   </div>
@@ -590,10 +590,10 @@ export const BridgeProjects: React.FC = () => {
                 <td className="px-6 py-4 text-sm text-gray-600">
                   <div className="leading-tight">
                     <div>
-                      {departments.find(d => d.id === r.project.department_id)?.departmentName || r.project.department_id || '-'}
+                      {departments.find(d => d.id === r.project.departmentId)?.departmentName || r.project.departmentId || '-'}
                     </div>
                     <div className="text-xs text-gray-500 mt-1 flex items-center gap-1">
-                      <span>{r.project.assignee_id ? (userNameById[r.project.assignee_id] || r.project.assignee_id) : '-'}</span>
+                      <span>{r.project.assigneeId ? (userNameById[r.project.assigneeId] || r.project.assigneeId) : '-'}</span>
                       {canEditProject && (
                         <button
                           className="text-blue-600 hover:text-blue-800 ml-1"
@@ -652,7 +652,7 @@ export const BridgeProjects: React.FC = () => {
                       分解
                     </button>
                   )}
-                  {canDeleteProject && r.project.source === 'local' && !r.project.tms_synced && (
+                  {canDeleteProject && r.project.source === 'local' && !r.project.tmsSynced && (
                     <button
                       className="text-emerald-600 hover:text-emerald-800"
                       onClick={async () => {
@@ -714,17 +714,17 @@ export const BridgeProjects: React.FC = () => {
                     待选
                   </div>
                   <div className="border rounded p-2 h-56 overflow-auto space-y-1">
-                    {userOptions.filter(u => !participantIds.includes(u.user_id)).map(u => (
+                    {userOptions.filter(u => !participantIds.includes(u.userId)).map(u => (
                       <button
-                        key={u.user_id}
+                        key={u.userId}
                         type="button"
                         className="w-full flex items-center justify-between text-sm px-2 py-1 rounded hover:bg-gray-50"
-                        onClick={() => toggleParticipantId(u.user_id)}
+                        onClick={() => toggleParticipantId(u.userId)}
                       >
                         <span className="truncate">{u.username}</span>
                       </button>
                     ))}
-                    {userOptions.filter(u => !participantIds.includes(u.user_id)).length === 0 && (
+                    {userOptions.filter(u => !participantIds.includes(u.userId)).length === 0 && (
                       <div className="text-xs text-gray-400 px-2 py-1">暂无待选</div>
                     )}
                   </div>
@@ -735,17 +735,17 @@ export const BridgeProjects: React.FC = () => {
                     已选
                   </div>
                   <div className="border rounded p-2 h-56 overflow-auto space-y-1">
-                    {userOptions.filter(u => participantIds.includes(u.user_id)).map(u => (
+                    {userOptions.filter(u => participantIds.includes(u.userId)).map(u => (
                       <button
-                        key={u.user_id}
+                        key={u.userId}
                         type="button"
                         className="w-full flex items-center justify-between text-sm px-2 py-1 rounded hover:bg-gray-50"
-                        onClick={() => toggleParticipantId(u.user_id)}
+                        onClick={() => toggleParticipantId(u.userId)}
                       >
                         <span className="truncate">{u.username}</span>
                       </button>
                     ))}
-                    {userOptions.filter(u => participantIds.includes(u.user_id)).length === 0 && (
+                    {userOptions.filter(u => participantIds.includes(u.userId)).length === 0 && (
                       <div className="text-xs text-gray-400 px-2 py-1">暂无已选</div>
                     )}
                   </div>
@@ -880,7 +880,7 @@ export const BridgeProjects: React.FC = () => {
                 <select className="w-full border rounded p-2" value={projectLeaderId} onChange={e => setProjectLeaderId(e.target.value)}>
                   <option value="">-- 未指定 --</option>
                   {projectManagers.map(u => (
-                    <option key={u.user_id} value={u.user_id}>{u.username}</option>
+                    <option key={u.userId} value={u.userId}>{u.username}</option>
                   ))}
                 </select>
               </div>
@@ -932,8 +932,8 @@ export const BridgeProjects: React.FC = () => {
               <div><span className="text-gray-500">名称：</span>{infoProject.name}</div>
               <div><span className="text-gray-500">类型：</span>{infoProject.type}</div>
               <div><span className="text-gray-500">状态：</span>{infoProject.status}</div>
-              {infoProject.input_params && (
-                <div><span className="text-gray-500">输入参数：</span><pre className="bg-gray-50 p-2 rounded text-xs overflow-auto max-h-48 mt-1">{JSON.stringify(typeof infoProject.input_params === 'string' ? JSON.parse(infoProject.input_params) : infoProject.input_params, null, 2)}</pre></div>
+              {infoProject.inputParams && (
+                <div><span className="text-gray-500">输入参数：</span><pre className="bg-gray-50 p-2 rounded text-xs overflow-auto max-h-48 mt-1">{JSON.stringify(typeof infoProject.inputParams === 'string' ? JSON.parse(infoProject.inputParams) : infoProject.inputParams, null, 2)}</pre></div>
               )}
             </div>
           </div>

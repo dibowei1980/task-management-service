@@ -1,13 +1,16 @@
 import json
+import logging
 import os
 import threading
 import traceback
 import uuid
 from datetime import datetime
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, request
 
 from api.auth import require_local_auth, require_auth, require_permission
+from api.utils import api_ok, api_accepted, api_error
+from api.schemas import validate_body, get_validated_body, WorkflowStatusBody, TaskExecuteBody, PreprocessGenerateBody, MaskGenerateBody, MaskSaveBody, InpaintStartBody, InpaintResultBody, MergeResultsBody, ProjectUpdateBody
 from services.project_service import (
     get_project, project_to_task_response, find_project_by_task_id,
     update_project_fields,
@@ -23,7 +26,26 @@ from bridge_removal_task import (
     run_write_back_to_dom,
 )
 
-tasks_bp = Blueprint("tasks", __name__)
+tasks_bp = Blueprint("tasks", __name__, url_prefix="/api/v1/tasks")
+
+logger = logging.getLogger(__name__)
+
+_ALLOWED_ROOTS_ENV = os.getenv("BRS_ALLOWED_ROOTS", "")
+_ALLOWED_ROOTS: list = []
+if _ALLOWED_ROOTS_ENV:
+    _ALLOWED_ROOTS = [os.path.realpath(p) for p in _ALLOWED_ROOTS_ENV.split(";") if p.strip()]
+
+
+def _is_path_allowed(requested_path: str) -> bool:
+    if not requested_path:
+        return False
+    real = os.path.realpath(requested_path)
+    allowed_dirs = list(_ALLOWED_ROOTS)
+    allowed_dirs.append(os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "intermediate")))
+    for allowed in allowed_dirs:
+        if real.startswith(allowed + os.sep) or real == allowed:
+            return True
+    return False
 
 
 @tasks_bp.route("/<task_id>", methods=["GET"])
@@ -33,17 +55,18 @@ def get_task(task_id: str):
     if not project:
         project = find_project_by_task_id(task_id)
     if not project:
-        return jsonify({"error": "Task not found"}), 404
-    return jsonify(project_to_task_response(project))
+        return api_error("not_found", "Task not found", 404)
+    return api_ok(project_to_task_response(project))
 
 
 @tasks_bp.route("/<task_id>", methods=["PUT"])
 @require_local_auth
+@validate_body(ProjectUpdateBody)
 def update_task(task_id: str):
     project = get_project(task_id)
     if not project:
-        return jsonify({"error": "Task not found"}), 404
-    body = request.get_json(force=True, silent=True) or {}
+        return api_error("not_found", "Task not found", 404)
+    body = get_validated_body()
     updatable_fields = [
         "name", "task_name", "status", "priority", "assignee_id",
         "project_leader_id", "department_id", "department_name",
@@ -52,9 +75,7 @@ def update_task(task_id: str):
         "external_system", "external_task_id", "external_url",
     ]
     for field in updatable_fields:
-        camel = ''.join(word.capitalize() for word in field.split('_'))
-        camel = camel[0].lower() + camel[1:]
-        val = body.get(field) if field in body else body.get(camel)
+        val = body.get(field)
         if val is not None:
             project[field] = val
     if "name" in body and "task_name" not in body:
@@ -69,19 +90,18 @@ def update_task(task_id: str):
             except (json.JSONDecodeError, TypeError):
                 ip = {}
         project["input_params"] = ip
-    return jsonify(project_to_task_response(project))
+    return api_ok(project_to_task_response(project))
 
 
 @tasks_bp.route("/<task_id>/workflow-status", methods=["PATCH"])
 @require_local_auth
+@validate_body(WorkflowStatusBody)
 def update_workflow_status(task_id: str):
     project = get_project(task_id)
     if not project:
-        return jsonify({"error": "Task not found"}), 404
-    body = request.get_json(force=True, silent=True) or {}
-    workflow_status = body.get("workflowStatus") or body.get("workflow_status")
-    if not workflow_status:
-        return jsonify({"error": "workflowStatus is required"}), 400
+        return api_error("not_found", "Task not found", 404)
+    body = get_validated_body()
+    workflow_status = body.get("workflow_status")
 
     input_params = project.get("input_params", {})
     if isinstance(input_params, str):
@@ -98,15 +118,15 @@ def update_workflow_status(task_id: str):
     }
     current_ws = input_params.get("workflowStatus") or input_params.get("workflow_status", "")
     if is_local_unsynced and (current_ws, workflow_status) in qa_blocked_transitions:
-        return jsonify({"error": "Local unsynced project cannot pass quality check. Submit to TMS first."}), 403
+        return api_error("qa_blocked", "Local unsynced project cannot pass quality check. Submit to TMS first.", 403)
 
     input_params["workflowStatus"] = workflow_status
     input_params["workflow_status"] = workflow_status
 
-    comment_stage = body.get("commentStage") or body.get("comment_stage")
-    comment_result = body.get("commentResult") or body.get("comment_result")
-    comment_message = body.get("commentMessage") or body.get("comment_message")
-    intermediate_path = body.get("intermediatePath") or body.get("intermediate_path")
+    comment_stage = body.get("comment_stage")
+    comment_result = body.get("comment_result")
+    comment_message = body.get("comment_message")
+    intermediate_path = body.get("intermediate_path")
     progress = body.get("progress")
 
     if comment_stage:
@@ -140,7 +160,7 @@ def update_workflow_status(task_id: str):
         "output_results": project.get("output_results"),
     })
 
-    return jsonify(project_to_task_response(project))
+    return api_ok(project_to_task_response(project))
 
 
 @tasks_bp.route("/<task_id>/dom-locate", methods=["GET"])
@@ -148,7 +168,7 @@ def update_workflow_status(task_id: str):
 def dom_locate(task_id: str):
     project = find_project_by_task_id(task_id)
     if not project:
-        return jsonify({"error": "Task not found"}), 404
+        return api_error("not_found", "Task not found", 404)
 
     input_params = project.get("input_params", {})
     bridge_polygon = input_params.get("bridge_polygon") or input_params.get("bridge_polygon_geojson")
@@ -168,7 +188,7 @@ def dom_locate(task_id: str):
         except Exception:
             dom_tiles.append({"path": dom_path, "bounds": None, "resolution": None})
 
-    return jsonify({
+    return api_ok({
         "task_id": task_id,
         "bridge_polygon": bridge_polygon,
         "bridge_centerline": bridge_centerline,
@@ -183,7 +203,7 @@ def dom_file(task_id: str):
     from flask import send_file
     project = find_project_by_task_id(task_id)
     if not project:
-        return jsonify({"error": "Task not found"}), 404
+        return api_error("not_found", "Task not found", 404)
 
     input_params = project.get("input_params", {})
     dom_path = request.args.get("path")
@@ -192,7 +212,11 @@ def dom_file(task_id: str):
         if source_doms:
             dom_path = source_doms[0]
     if not dom_path or not os.path.exists(dom_path):
-        return jsonify({"error": "DOM file not found"}), 404
+        return api_error("not_found", "DOM file not found", 404)
+
+    if not _is_path_allowed(dom_path):
+        logger.warning("dom_file 路径遍历拦截: task_id=%s, path=%s", task_id, dom_path)
+        return api_error("access_denied", "Access denied: path outside allowed directories", 403)
 
     return send_file(dom_path, mimetype="image/tiff")
 
@@ -202,7 +226,7 @@ def dom_file(task_id: str):
 def preprocess_segments(task_id: str):
     project = find_project_by_task_id(task_id)
     if not project:
-        return jsonify({"error": "Task not found"}), 404
+        return api_error("not_found", "Task not found", 404)
 
     input_params = project.get("input_params", {})
     intermediate_path = input_params.get("intermediate_path") or f"./intermediate/{task_id}"
@@ -215,7 +239,7 @@ def preprocess_segments(task_id: str):
             if os.path.isdir(seg_path):
                 segments.append({"name": name, "path": seg_path})
 
-    return jsonify({"task_id": task_id, "segments": segments, "intermediate_path": intermediate_path})
+    return api_ok({"task_id": task_id, "segments": segments, "intermediate_path": intermediate_path})
 
 
 @tasks_bp.route("/<task_id>/preprocess-file", methods=["GET"])
@@ -224,11 +248,15 @@ def preprocess_file(task_id: str):
     from flask import send_file
     project = find_project_by_task_id(task_id)
     if not project:
-        return jsonify({"error": "Task not found"}), 404
+        return api_error("not_found", "Task not found", 404)
 
     file_path = request.args.get("path")
     if not file_path or not os.path.exists(file_path):
-        return jsonify({"error": "File not found"}), 404
+        return api_error("not_found", "File not found", 404)
+
+    if not _is_path_allowed(file_path):
+        logger.warning("preprocess_file 路径遍历拦截: task_id=%s, path=%s", task_id, file_path)
+        return api_error("access_denied", "Access denied: path outside allowed directories", 403)
 
     return send_file(file_path)
 
@@ -236,8 +264,9 @@ def preprocess_file(task_id: str):
 @tasks_bp.route("/<task_id>/preprocess-generate", methods=["POST"])
 @require_local_auth
 @require_permission("task:execute")
+@validate_body(PreprocessGenerateBody)
 def api_preprocess_generate(task_id: str):
-    body = request.get_json(force=True, silent=True) or {}
+    body = get_validated_body()
     input_params = body.get("input_params", {})
     overwrite = body.get("overwrite", False)
     max_side_px = body.get("max_side_px", 1024)
@@ -264,19 +293,20 @@ def api_preprocess_generate(task_id: str):
             update_job_status(job_id, "FAILED", error=str(e))
 
     threading.Thread(target=_run, daemon=True).start()
-    return jsonify({"job_id": job_id, "status": "STARTED"})
+    return api_accepted({"job_id": job_id, "status": "STARTED"})
 
 
 @tasks_bp.route("/<task_id>/execute", methods=["POST"])
 @require_auth
 @require_permission("task:execute")
+@validate_body(TaskExecuteBody)
 def execute_task(task_id: str):
-    body = request.get_json(force=True, silent=True) or {}
+    body = get_validated_body()
     task_type = body.get("task_type", "")
     input_params = body.get("input_params", {})
 
     if task_type not in ("BRIDGE_REMOVAL_BATCH", "BRIDGE_REMOVAL_UNIT"):
-        return jsonify({"error": f"不支持的任务类型: {task_type}"}), 400
+        return api_error("invalid_task_type", f"Unsupported task type: {task_type}", 400)
 
     job_id = create_job_record(task_id, task_type, input_params)
 
@@ -300,20 +330,21 @@ def execute_task(task_id: str):
             update_job_status(job_id, "FAILED", error=f"{error_msg}\n{traceback_str}")
 
     threading.Thread(target=_run, daemon=True).start()
-    return jsonify({"job_id": job_id, "status": "STARTED"})
+    return api_accepted({"job_id": job_id, "status": "STARTED"})
 
 
 @tasks_bp.route("/<task_id>/mask-generate", methods=["POST"])
 @require_local_auth
 @require_permission("task:execute")
+@validate_body(MaskGenerateBody)
 def mask_generate(task_id: str):
-    body = request.get_json(force=True, silent=True) or {}
+    body = get_validated_body()
     input_params = body.get("input_params", {})
     segment_name = body.get("segment_name", "")
 
     project = find_project_by_task_id(task_id)
     if not project:
-        return jsonify({"error": "Task not found"}), 404
+        return api_error("not_found", "Task not found", 404)
 
     job_id = create_job_record(task_id, "MASK_GENERATE", input_params)
 
@@ -332,20 +363,21 @@ def mask_generate(task_id: str):
             update_job_status(job_id, "FAILED", error=str(e))
 
     threading.Thread(target=_run, daemon=True).start()
-    return jsonify({"job_id": job_id, "status": "STARTED"})
+    return api_accepted({"job_id": job_id, "status": "STARTED"})
 
 
 @tasks_bp.route("/<task_id>/mask-save", methods=["POST"])
 @require_local_auth
 @require_permission("task:execute")
+@validate_body(MaskSaveBody)
 def mask_save(task_id: str):
-    body = request.get_json(force=True, silent=True) or {}
+    body = get_validated_body()
     mask_data = body.get("mask_data")
     segment_name = body.get("segment_name", "")
 
     project = find_project_by_task_id(task_id)
     if not project:
-        return jsonify({"error": "Task not found"}), 404
+        return api_error("not_found", "Task not found", 404)
 
     input_params = project.get("input_params", {})
     intermediate_path = input_params.get("intermediate_path") or f"./intermediate/{task_id}"
@@ -367,23 +399,25 @@ def mask_save(task_id: str):
             with open(mask_path, "wb") as f:
                 f.write(img_bytes)
         else:
-            return jsonify({"error": "Invalid mask_data format"}), 400
+            return api_error("validation_error", "Invalid mask_data format", 400)
 
-        return jsonify({"task_id": task_id, "mask_path": mask_path, "saved": True})
+        return api_ok({"task_id": task_id, "mask_path": mask_path, "saved": True})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        logger.exception("mask_save failed: %s", e)
+        return api_error("mask_save_failed", "Failed to save mask", 500)
 
 
 @tasks_bp.route("/<task_id>/inpaint-start", methods=["POST"])
 @require_local_auth
 @require_permission("task:execute")
+@validate_body(InpaintStartBody)
 def inpaint_start(task_id: str):
-    body = request.get_json(force=True, silent=True) or {}
+    body = get_validated_body()
     input_params = body.get("input_params", {})
 
     project = find_project_by_task_id(task_id)
     if not project:
-        return jsonify({"error": "Task not found"}), 404
+        return api_error("not_found", "Task not found", 404)
 
     job_id = create_job_record(task_id, "INPAINT_START", input_params)
 
@@ -396,7 +430,7 @@ def inpaint_start(task_id: str):
             update_job_status(job_id, "FAILED", error=str(e))
 
     threading.Thread(target=_run, daemon=True).start()
-    return jsonify({"job_id": job_id, "status": "STARTED"})
+    return api_accepted({"job_id": job_id, "status": "STARTED"})
 
 
 @tasks_bp.route("/<task_id>/inpaint-status", methods=["GET"])
@@ -404,8 +438,8 @@ def inpaint_start(task_id: str):
 def inpaint_status(task_id: str):
     job = find_latest_job_by_task(task_id, "INPAINT_START")
     if not job:
-        return jsonify({"task_id": task_id, "status": "NOT_STARTED"})
-    return jsonify({"task_id": task_id, "job_id": job["job_id"], "status": job["status"], "results": job.get("results")})
+        return api_ok({"task_id": task_id, "status": "NOT_STARTED"})
+    return api_ok({"task_id": task_id, "job_id": job["job_id"], "status": job["status"], "results": job.get("results")})
 
 
 @tasks_bp.route("/<task_id>/inpaint-cancel", methods=["POST"])
@@ -414,9 +448,9 @@ def inpaint_status(task_id: str):
 def inpaint_cancel(task_id: str):
     job = find_latest_job_by_task(task_id, "INPAINT_START")
     if not job or job["status"] != "IN_PROGRESS":
-        return jsonify({"task_id": task_id, "status": "NO_ACTIVE_JOB"})
+        return api_ok({"task_id": task_id, "status": "NO_ACTIVE_JOB"})
     job["status"] = "CANCELLED"
-    return jsonify({"task_id": task_id, "status": "CANCELLED"})
+    return api_ok({"task_id": task_id, "status": "CANCELLED"})
 
 
 @tasks_bp.route("/<task_id>/inpaint-retry", methods=["POST"])
@@ -429,22 +463,23 @@ def inpaint_retry(task_id: str):
 @tasks_bp.route("/<task_id>/inpaint-result", methods=["POST"])
 @require_local_auth
 @require_permission("task:execute")
+@validate_body(InpaintResultBody)
 def inpaint_result(task_id: str):
-    body = request.get_json(force=True, silent=True) or {}
+    body = get_validated_body()
     selected_index = body.get("selected_index", 0)
 
     project = find_project_by_task_id(task_id)
     if not project:
-        return jsonify({"error": "Task not found"}), 404
+        return api_error("not_found", "Task not found", 404)
 
     input_params = project.get("input_params", {})
     intermediate_path = input_params.get("intermediate_path") or f"./intermediate/{task_id}"
     inpainted_path = os.path.join(intermediate_path, "inpainted_patch.tif")
 
     if not os.path.exists(inpainted_path):
-        return jsonify({"error": "Inpaint result not found"}), 404
+        return api_error("not_found", "Inpaint result not found", 404)
 
-    return jsonify({
+    return api_ok({
         "task_id": task_id,
         "selected_index": selected_index,
         "result_path": inpainted_path,
@@ -458,14 +493,14 @@ def inpaint_file(task_id: str):
     from flask import send_file
     project = find_project_by_task_id(task_id)
     if not project:
-        return jsonify({"error": "Task not found"}), 404
+        return api_error("not_found", "Task not found", 404)
 
     input_params = project.get("input_params", {})
     intermediate_path = input_params.get("intermediate_path") or f"./intermediate/{task_id}"
     inpainted_path = os.path.join(intermediate_path, "inpainted_patch.tif")
 
     if not os.path.exists(inpainted_path):
-        return jsonify({"error": "Inpaint file not found"}), 404
+        return api_error("not_found", "Inpaint file not found", 404)
 
     return send_file(inpainted_path, mimetype="image/tiff")
 
@@ -473,13 +508,14 @@ def inpaint_file(task_id: str):
 @tasks_bp.route("/<task_id>/merge-results", methods=["POST"])
 @require_local_auth
 @require_permission("task:execute")
+@validate_body(MergeResultsBody)
 def merge_results(task_id: str):
-    body = request.get_json(force=True, silent=True) or {}
+    body = get_validated_body()
     input_params = body.get("input_params", {})
 
     project = find_project_by_task_id(task_id)
     if not project:
-        return jsonify({"error": "Task not found"}), 404
+        return api_error("not_found", "Task not found", 404)
 
     job_id = create_job_record(task_id, "MERGE_RESULTS", input_params)
 
@@ -495,4 +531,4 @@ def merge_results(task_id: str):
             callback_task_status(task_id, "FAILED")
 
     threading.Thread(target=_run, daemon=True).start()
-    return jsonify({"job_id": job_id, "status": "STARTED"})
+    return api_accepted({"job_id": job_id, "status": "STARTED"})

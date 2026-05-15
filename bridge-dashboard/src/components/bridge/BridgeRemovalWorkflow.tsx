@@ -35,7 +35,7 @@ const parseJson = (raw?: string): Record<string, unknown> => {
 };
 
 const getWorkflowStatus = (task: BridgeTask): string | null => {
-  const input = parseJson(task.input_params);
+  const input = parseJson(task.inputParams);
   const v = input['workflow_status'];
   return typeof v === 'string' && v ? v : null;
 };
@@ -89,14 +89,14 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
 
   const canDeleteTask = roles.includes('task:update_global') || roles.includes('project:update_global');
   const canQualityCheck = roles.includes('quality:check') || roles.includes('task:update_global');
-  const userId = user?.user_id;
+  const userId = user?.userId;
   const userName = user?.username;
   const hasBroadProjectRead = roles.includes('project:read') || roles.includes('project:create');
 
   const userNameById = useMemo(() => {
     const map: Record<string, string> = {};
     userOptions.forEach(u => {
-      if (u?.user_id) map[u.user_id] = u.username;
+      if (u?.userId) map[u.userId] = u.username;
     });
     return map;
   }, [userOptions]);
@@ -178,7 +178,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
   }, [allTasks]);
 
   const getBridgeLength = (task: BridgeTask): string => {
-    const input = parseJson(task.input_params);
+    const input = parseJson(task.inputParams);
     const feature = input['bridge_feature'] as Record<string, unknown> | undefined;
     const props = feature?.['properties'] as Record<string, unknown> | undefined;
     const len = props?.['Shape_Leng'] || props?.['length'] || props?.['LENGTH'] || props?.['Length'] || input['bridge_length'];
@@ -190,7 +190,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
   };
 
   const getBridgeWidth = (task: BridgeTask): string => {
-    const input = parseJson(task.input_params);
+    const input = parseJson(task.inputParams);
     const feature = input['bridge_feature'] as Record<string, unknown> | undefined;
     const props = feature?.['properties'] as Record<string, unknown> | undefined;
     const width = props?.['bridge_width'] || input['bridge_width'];
@@ -216,7 +216,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
   };
 
   const getAssigneeDisplay = (task: BridgeTask): string => {
-    const id = task.assignee_id || '';
+    const id = task.assigneeId || '';
     if (!id) return '-';
     if (id === userId && userName) return userName;
     return userNameById[id] || id;
@@ -356,7 +356,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
     while (current?.id && !seen.has(current.id)) {
       chain.unshift(current);
       seen.add(current.id);
-      const parentId: string | undefined = current.parent_task_id;
+      const parentId: string | undefined = current.parentTaskId;
       current = parentId ? taskById[parentId] : undefined;
     }
     return chain;
@@ -365,14 +365,14 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
   const visibleTasks = useMemo(() => {
     if (hasBroadProjectRead) return allTasks;
     return allTasks.filter(task => {
-      const hasAssignee = task.assignee_id != null;
-      const hasOperators = Array.isArray(task.operator_ids) && task.operator_ids.length > 0;
-      if (userId && (task.assignee_id === userId || (hasOperators && task.operator_ids?.includes(userId)))) {
+      const hasAssignee = task.assigneeId != null;
+      const hasOperators = Array.isArray(task.operatorIds) && task.operatorIds.length > 0;
+      if (userId && (task.assigneeId === userId || (hasOperators && task.operatorIds?.includes(userId)))) {
         return true;
       }
       if (!hasAssignee && !hasOperators && userId) {
-        const projectRef = task.project_id ? projectById[task.project_id] : undefined;
-        if (projectRef?.operator_ids?.includes(userId)) return true;
+        const projectRef = task.projectId ? projectById[task.projectId] : undefined;
+        if (projectRef?.operatorIds?.includes(userId)) return true;
       }
       return false;
     });
@@ -386,7 +386,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
       .filter(x => x.workflowStatus === activeTab)
       .map(x => x.task);
     if (['处理中', '待初检', '待写回', '需修改', '完成'].includes(activeTab) && showOnlyMineTasks && userId) {
-      return base.filter(t => t.assignee_id === userId);
+      return base.filter(t => t.assigneeId === userId);
     }
     return base;
   }, [activeTab, showOnlyMineTasks, userId, visibleTasks]);
@@ -401,7 +401,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
     if (showOnlyMineTasks && userId && ['处理中', '待初检', '待写回', '需修改', '完成'].includes(activeTab)) {
       const mineCounts: Record<string, number> = {};
       visibleTasks.forEach(t => {
-        if (t.assignee_id !== userId) return;
+        if (t.assigneeId !== userId) return;
         const status = getWorkflowStatusForTask(t);
         if (!status) return;
         mineCounts[status] = (mineCounts[status] || 0) + 1;
@@ -536,8 +536,8 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
       return;
     }
     try {
-      const operatorIds = Array.isArray(task.operator_ids) && task.operator_ids.length > 0
-        ? Array.from(new Set([userId, ...task.operator_ids]))
+      const operatorIds = Array.isArray(task.operatorIds) && task.operatorIds.length > 0
+        ? Array.from(new Set([userId, ...task.operatorIds]))
         : [userId];
       await bridgeTaskService.updateTask(task.id, { assignee_id: userId, operator_ids: operatorIds });
       await updateWorkflow(task.id, '处理中');
@@ -581,8 +581,8 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
     setBatchMaskMessage(null);
     setBatchMaskError(null);
     const results = await Promise.allSettled(targets.map(async task => {
-      const operatorIds = Array.isArray(task.operator_ids) && task.operator_ids.length > 0
-        ? Array.from(new Set([userId, ...task.operator_ids]))
+      const operatorIds = Array.isArray(task.operatorIds) && task.operatorIds.length > 0
+        ? Array.from(new Set([userId, ...task.operatorIds]))
         : [userId];
       await bridgeTaskService.updateTask(task.id, { assignee_id: userId, operator_ids: operatorIds });
       await bridgeTaskService.updateWorkflowStatus(task.id, { workflowStatus: '处理中' });
@@ -685,7 +685,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
         { key: 'priority', label: '优先级', render: renderPriority },
         { key: 'length', label: '长度/宽度(m)', render: t => getBridgeLengthWidth(t) },
         { key: 'edit', label: '编辑', render: t => {
-          const canEdit = t.assignee_id === userId;
+          const canEdit = t.assigneeId === userId;
           return (
             <button
               className={canEdit ? 'text-blue-600 hover:text-blue-900' : 'text-gray-400 cursor-not-allowed'}
@@ -698,7 +698,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
           );
         } },
         { key: 'submit', label: '提交', render: t => {
-          const canSubmit = t.assignee_id === userId;
+          const canSubmit = t.assigneeId === userId;
           return (
             <button
               className={canSubmit ? 'text-indigo-600 hover:text-indigo-800' : 'text-gray-400 cursor-not-allowed'}
@@ -722,7 +722,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
         { key: 'priority', label: '优先级', render: renderPriority },
         { key: 'length', label: '长度/宽度(m)', render: t => getBridgeLengthWidth(t) },
         { key: 'withdraw', label: '撤回', render: t => {
-          const canWithdraw = t.assignee_id === userId;
+          const canWithdraw = t.assigneeId === userId;
           return (
             <button
               className={canWithdraw ? 'text-blue-600 hover:text-blue-900' : 'text-gray-400 cursor-not-allowed'}
@@ -738,7 +738,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
           key: 'qa',
           label: '通过/不通过',
           render: t => {
-            const isLocalUnsynced = t.source === 'local' && !t.tms_synced;
+            const isLocalUnsynced = t.source === 'local' && !t.tmsSynced;
             if (!canQualityCheck) return '-';
             if (isLocalUnsynced) {
               return (
@@ -772,7 +772,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
         { key: 'priority', label: '优先级', render: renderPriority },
         { key: 'length', label: '长度/宽度(m)', render: t => getBridgeLengthWidth(t) },
         { key: 'writeback', label: '写回', render: t => {
-          const isLocalUnsynced = t.source === 'local' && !t.tms_synced;
+          const isLocalUnsynced = t.source === 'local' && !t.tmsSynced;
           if (isLocalUnsynced) {
             return (
               <span className="text-xs text-amber-600" title="本地项目需提交 TMS 后完成">
@@ -1056,16 +1056,16 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
               <div><span className="text-gray-500">状态：</span>{infoTask.status}</div>
               <div><span className="text-gray-500">优先级：</span>{infoTask.priority}</div>
               <div><span className="text-gray-500">工作流状态：</span>{getWorkflowStatusForTask(infoTask) || '-'}</div>
-              {infoTask.input_params && (
+              {infoTask.inputParams && (
                 <div>
                   <span className="text-gray-500">输入参数：</span>
-                  <pre className="bg-gray-50 p-3 rounded text-xs overflow-auto max-h-64 mt-1">{JSON.stringify(parseJson(infoTask.input_params), null, 2)}</pre>
+                  <pre className="bg-gray-50 p-3 rounded text-xs overflow-auto max-h-64 mt-1">{JSON.stringify(parseJson(infoTask.inputParams), null, 2)}</pre>
                 </div>
               )}
-              {infoTask.output_results && (
+              {infoTask.outputResults && (
                 <div>
                   <span className="text-gray-500">输出结果：</span>
-                  <pre className="bg-gray-50 p-3 rounded text-xs overflow-auto max-h-64 mt-1">{infoTask.output_results}</pre>
+                  <pre className="bg-gray-50 p-3 rounded text-xs overflow-auto max-h-64 mt-1">{infoTask.outputResults}</pre>
                 </div>
               )}
             </div>

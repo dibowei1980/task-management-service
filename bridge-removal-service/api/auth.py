@@ -1,13 +1,20 @@
 import hashlib
 import json
+import logging
 import os
 import secrets
 
 import requests
-from flask import Blueprint, jsonify, request, session, redirect
+from flask import Blueprint, request, session, redirect
 from functools import wraps
+from werkzeug.security import generate_password_hash, check_password_hash
 
-auth_bp = Blueprint("auth", __name__)
+from api.utils import api_ok, api_error
+from api.schemas import validate_body, get_validated_body, LoginBody
+
+logger = logging.getLogger(__name__)
+
+auth_bp = Blueprint("auth", __name__, url_prefix="/api/v1/auth")
 
 _sessions: dict = {}
 
@@ -15,21 +22,25 @@ LOCAL_USERS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 SSO_BASE_URL = os.getenv("SSO_BASE_URL", "http://localhost:8080")
 SSO_CLIENT_ID = os.getenv("SSO_CLIENT_ID", "bridge-removal-service")
 SSO_CLIENT_SECRET = os.getenv("SSO_CLIENT_SECRET", "")
-SSO_REDIRECT_URI = os.getenv("SSO_REDIRECT_URI", "http://localhost:5050/api/auth/sso/callback")
+SSO_REDIRECT_URI = os.getenv("SSO_REDIRECT_URI", "http://localhost:5050/api/v1/auth/sso/callback")
+BRIDGE_ADMIN_PASSWORD = os.getenv("BRIDGE_ADMIN_PASSWORD", "")
 
 
 def _load_local_users():
     if os.path.exists(LOCAL_USERS_FILE):
         with open(LOCAL_USERS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    default = {
-        "admin": {
-            "password_hash": hashlib.sha256("admin123".encode()).hexdigest(),
+    default = {}
+    if BRIDGE_ADMIN_PASSWORD:
+        default["admin"] = {
+            "password_hash": generate_password_hash(BRIDGE_ADMIN_PASSWORD),
             "display_name": "管理员",
             "role": "admin"
         }
-    }
-    _save_local_users(default)
+        _save_local_users(default)
+        logger.info("已创建默认管理员账户（密码来自 BRIDGE_ADMIN_PASSWORD 环境变量）")
+    else:
+        logger.warning("BRIDGE_ADMIN_PASSWORD 未设置，未创建默认管理员账户。请设置环境变量后重启服务。")
     return default
 
 
@@ -43,9 +54,17 @@ def _check_local_login(username, password):
     user = users.get(username)
     if not user:
         return None
-    pw_hash = hashlib.sha256(password.encode()).hexdigest()
-    if pw_hash != user.get("password_hash"):
-        return None
+    stored_hash = user.get("password_hash", "")
+    if stored_hash.startswith("sha256$") or (len(stored_hash) == 64 and "$" not in stored_hash):
+        legacy_hash = hashlib.sha256(password.encode()).hexdigest()
+        if legacy_hash != stored_hash:
+            return None
+        users[username]["password_hash"] = generate_password_hash(password)
+        _save_local_users(users)
+        logger.info("已将用户 %s 的密码哈希从 SHA-256 升级为 werkzeug PBKDF2", username)
+    else:
+        if not check_password_hash(stored_hash, password):
+            return None
     return {
         "user_id": username,
         "username": username,
@@ -105,7 +124,7 @@ def require_local_auth(f):
             request.current_user = _sessions[session_token]
             return f(*args, **kwargs)
 
-        return jsonify({"error": "Authentication required"}), 401
+        return api_error("auth_required", "Authentication required", 401)
     return decorated
 
 
@@ -145,7 +164,7 @@ def require_auth(f):
         except requests.RequestException:
             pass
 
-        return jsonify({"error": "Invalid or missing authentication"}), 401
+        return api_error("auth_invalid", "Invalid or missing authentication", 401)
     return decorated
 
 
@@ -155,10 +174,10 @@ def require_permission(permission: str):
         def decorated(*args, **kwargs):
             user = getattr(request, 'sso_user', None) or getattr(request, 'current_user', None)
             if not user:
-                return jsonify({"error": "Authentication required"}), 401
+                return api_error("auth_required", "Authentication required", 401)
             permissions = user.get('permissions', [])
             if permission not in permissions:
-                return jsonify({"error": f"Permission denied: {permission}"}), 403
+                return api_error("permission_denied", f"Permission denied: {permission}", 403)
             return f(*args, **kwargs)
         return decorated
     return decorator
@@ -186,15 +205,16 @@ def _register_sso_client(sso_session_id):
 
 
 @auth_bp.route("/login", methods=["POST"])
+@validate_body(LoginBody)
 def local_login():
     from db.repository import SessionRepository
-    body = request.get_json(force=True, silent=True) or {}
+    body = get_validated_body()
     username = body.get("username", "")
     password = body.get("password", "")
 
     user_info = _check_local_login(username, password)
     if not user_info:
-        return jsonify({"error": "Invalid username or password"}), 401
+        return api_error("auth_invalid", "Invalid username or password", 401)
 
     session_token = secrets.token_hex(32)
     _sessions[session_token] = user_info
@@ -208,7 +228,7 @@ def local_login():
         "permissions": json.dumps(user_info.get("permissions", [])),
     })
 
-    return jsonify({
+    return api_ok({
         "token": session_token,
         "user": {
             "user_id": user_info["user_id"],
@@ -243,13 +263,13 @@ def local_logout():
         _sessions.pop(token, None)
         SessionRepository.delete(token)
     session.pop("session_token", None)
-    return jsonify({"message": "Logged out"})
+    return api_ok({"message": "Logged out"})
 
 
 @auth_bp.route("/me", methods=["GET"])
 @require_local_auth
 def local_me():
-    return jsonify(request.current_user)
+    return api_ok(request.current_user)
 
 
 @auth_bp.route("/sso/auth-url", methods=["GET"])
@@ -264,10 +284,10 @@ def sso_auth_url():
         if resp.status_code == 200:
             data = resp.json()
             session["sso_state"] = data.get("state")
-            return jsonify(data)
-        return jsonify({"error": "SSO auth-url failed"}), resp.status_code
+            return api_ok(data)
+        return api_error("sso_auth_url_failed", "SSO auth-url request failed", resp.status_code)
     except requests.RequestException as e:
-        return jsonify({"error": f"SSO service error: {e}"}), 502
+        return api_error("sso_unavailable", f"SSO service error: {e}", 502)
 
 
 @auth_bp.route("/sso/callback", methods=["GET"])
@@ -382,4 +402,4 @@ def sso_logout():
         SessionRepository.delete(token)
     session.pop("session_token", None)
 
-    return jsonify({"message": "Logged out"})
+    return api_ok({"message": "Logged out"})

@@ -1,12 +1,16 @@
+import logging
 import os
 from datetime import datetime
 
 import requests
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, request
 
 from api.auth import require_local_auth
+from api.utils import api_ok, api_error
 
-upm_bp = Blueprint("upm", __name__)
+logger = logging.getLogger(__name__)
+
+upm_bp = Blueprint("upm", __name__, url_prefix="/api/v1/upm")
 
 UPM_BASE_URL = os.getenv("UPM_BASE_URL", "http://localhost:8081")
 UPM_API_TOKEN = os.getenv("UPM_API_TOKEN", "")
@@ -63,13 +67,13 @@ def _check_upm_available():
     return _upm_available
 
 
-@upm_bp.route("/api/upm/users", methods=["GET"])
+@upm_bp.route("/users", methods=["GET"])
 @require_local_auth
 def upm_proxy_users():
     role_name = request.args.get("roleName", "")
     token = _get_upm_service_token()
     if not token:
-        return jsonify([])
+        return api_error("upm_unavailable", "UPM service is not available", 503)
     try:
         if role_name:
             resp = requests.get(
@@ -86,21 +90,22 @@ def upm_proxy_users():
                 timeout=10,
             )
         if resp.status_code == 200:
-            return jsonify(resp.json())
+            return api_ok(resp.json())
         if resp.status_code == 403:
             global _upm_service_token
             _upm_service_token = None
-        return jsonify([])
-    except Exception:
-        return jsonify([])
+        return api_error("upm_error", f"UPM returned {resp.status_code}", 502)
+    except requests.RequestException as e:
+        logger.warning("UPM proxy users failed: %s", e)
+        return api_error("upm_unavailable", "UPM service is not available", 503)
 
 
-@upm_bp.route("/api/upm/departments", methods=["GET"])
+@upm_bp.route("/departments", methods=["GET"])
 @require_local_auth
 def upm_proxy_departments():
     token = _get_upm_service_token()
     if not token:
-        return jsonify([])
+        return api_error("upm_unavailable", "UPM service is not available", 503)
     try:
         resp = requests.get(
             f"{UPM_BASE_URL}/api/departments",
@@ -108,10 +113,11 @@ def upm_proxy_departments():
             timeout=10,
         )
         if resp.status_code == 200:
-            return jsonify(resp.json())
+            return api_ok(resp.json())
         if resp.status_code == 403:
             global _upm_service_token
             _upm_service_token = None
-        return jsonify([])
-    except Exception:
-        return jsonify([])
+        return api_error("upm_error", f"UPM returned {resp.status_code}", 502)
+    except requests.RequestException as e:
+        logger.warning("UPM proxy departments failed: %s", e)
+        return api_error("upm_unavailable", "UPM service is not available", 503)

@@ -1,12 +1,16 @@
+import logging
 import os
-import traceback
 
 import requests
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, request
 
 from api.auth import require_auth, require_permission
+from api.utils import api_ok, api_error
+from api.schemas import validate_body, get_validated_body, SimulateBody
 
-system_bp = Blueprint("system", __name__)
+logger = logging.getLogger(__name__)
+
+system_bp = Blueprint("system", __name__, url_prefix="/api/v1/system")
 
 SSO_BASE_URL = os.getenv("SSO_BASE_URL", "http://localhost:8080")
 
@@ -19,7 +23,10 @@ def _check_sso_available():
         return False
 
 
-@system_bp.route("/health", methods=["GET"])
+health_bp = Blueprint("health", __name__)
+
+
+@health_bp.route("/health", methods=["GET"])
 def health_check():
     from services.callback_service import _task_management_available
     sso_ok = False
@@ -28,7 +35,7 @@ def health_check():
         sso_ok = resp.status_code == 200
     except Exception:
         pass
-    return jsonify({
+    return api_ok({
         "status": "ok",
         "service": "bridge-removal-service",
         "task_management_connected": _task_management_available,
@@ -36,11 +43,11 @@ def health_check():
     })
 
 
-@system_bp.route("/api/system/status", methods=["GET"])
+@system_bp.route("/status", methods=["GET"])
 def system_status():
     from services.callback_service import _task_management_available
     from api.upm import _check_upm_available
-    return jsonify({
+    return api_ok({
         "task_management_connected": _task_management_available,
         "sso_connected": _check_sso_available(),
         "upm_connected": _check_upm_available(),
@@ -50,11 +57,13 @@ def system_status():
 @system_bp.route("/simulate", methods=["POST"])
 @require_auth
 @require_permission("task:execute")
+@validate_body(SimulateBody)
 def simulate_offline():
-    body = request.get_json(force=True, silent=True) or {}
+    body = get_validated_body()
     try:
         from services.simulation import simulate_end_to_end_flow_local
         summary = simulate_end_to_end_flow_local(body)
-        return jsonify(summary)
+        return api_ok(summary)
     except Exception as e:
-        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
+        logger.exception("Simulate failed: %s", e)
+        return api_error("simulation_failed", "Simulation failed", 500)

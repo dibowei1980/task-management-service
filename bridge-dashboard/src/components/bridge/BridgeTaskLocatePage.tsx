@@ -492,7 +492,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
     if (!taskId) return Promise.resolve();
     setSegmentsLoading(true);
     setSegmentsError(null);
-    return bridgeApi.get(`/api/tasks/${taskId}/preprocess-segments`).then(res => {
+    return bridgeApi.get(`/api/v1/tasks/${taskId}/preprocess-segments`).then(res => {
       const d = res.data as PreprocessSegmentsResponse;
       const list = Array.isArray(d?.segments) ? d.segments : [];
       const expanded: LocateItem[] = [];
@@ -584,7 +584,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
     const maskPath = buildMaskPath(target.jsonPath, target.path);
     if (maskPath) {
       try {
-        await bridgeApi.get(`/api/tasks/${taskId}/preprocess-file?path=${encodeURIComponent(maskPath)}`, { responseType: 'arraybuffer' });
+        await bridgeApi.get(`/api/v1/tasks/${taskId}/preprocess-file?path=${encodeURIComponent(maskPath)}`, { responseType: 'arraybuffer' });
         const ok = window.confirm('当前分段掩膜已存在，是否覆盖？');
         if (!ok) return;
       } catch (e) {
@@ -607,7 +607,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
     setMaskSaveError(null);
     setMaskSaveSuccess(null);
     setMaskToast(null);
-    bridgeApi.post(`/api/tasks/${taskId}/mask-generate`, {
+    bridgeApi.post(`/api/v1/tasks/${taskId}/mask-generate`, {
       segment_json_path: target.jsonPath,
     }).then(res => {
       const data = res.data as { mask_manifest?: { artifacts?: { segment_count?: number }; error?: unknown } } | null;
@@ -839,7 +839,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
     setLoading(true);
     setError(null);
     setData(null);
-    bridgeApi.get(`/api/tasks/${taskId}/dom-locate`).then(res => {
+    bridgeApi.get(`/api/v1/tasks/${taskId}/dom-locate`).then(res => {
       if (disposed) return;
       const d = res.data as DomLocateResponse;
       setData(d);
@@ -1095,7 +1095,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
         const cutUrl = cutCanvas.toDataURL('image/png');
         payload.mask_cut_png_base64 = cutUrl.split(',')[1] || '';
       }
-      await bridgeApi.post(`/api/tasks/${taskId}/mask-save`, payload);
+      await bridgeApi.post(`/api/v1/tasks/${taskId}/mask-save`, payload);
       setMaskDirty(false);
       const message = '掩膜已保存';
       setMaskSaveSuccess(message);
@@ -1370,7 +1370,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
       return;
     }
     let disposed = false;
-    bridgeApi.get<ArrayBuffer>(`/api/tasks/${taskId}/preprocess-file?path=${encodeURIComponent(maskPath)}`, { responseType: 'arraybuffer' }).then(res => {
+    bridgeApi.get<ArrayBuffer>(`/api/v1/tasks/${taskId}/preprocess-file?path=${encodeURIComponent(maskPath)}`, { responseType: 'arraybuffer' }).then(res => {
       if (disposed) return;
       const contentType = String((res.headers as Record<string, unknown>)['content-type'] || '');
       return createBitmapFromImageBuffer(res.data as ArrayBuffer, contentType);
@@ -1410,7 +1410,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
       return;
     }
     let disposed = false;
-    bridgeApi.get<ArrayBuffer>(`/api/tasks/${taskId}/preprocess-file?path=${encodeURIComponent(maskPath)}`, { responseType: 'arraybuffer' }).then(res => {
+    bridgeApi.get<ArrayBuffer>(`/api/v1/tasks/${taskId}/preprocess-file?path=${encodeURIComponent(maskPath)}`, { responseType: 'arraybuffer' }).then(res => {
       if (disposed) return;
       const contentType = String((res.headers as Record<string, unknown>)['content-type'] || '');
       return createBitmapFromImageBuffer(res.data as ArrayBuffer, contentType);
@@ -2354,7 +2354,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
                       if (!taskId) return;
                       setSegmentsGenerating(true);
                       setSegmentsGenerateError(null);
-                      bridgeApi.post(`/api/tasks/${taskId}/preprocess-generate`).then(() => {
+                      bridgeApi.post(`/api/v1/tasks/${taskId}/preprocess-generate`).then(() => {
                         return reloadSegments();
                       }).catch(e => {
                         const msg = (e && typeof e === 'object' && 'message' in e) ? String((e as { message?: unknown }).message) : '生成分段数据包失败';

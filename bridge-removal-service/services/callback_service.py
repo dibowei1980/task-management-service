@@ -24,7 +24,6 @@ def callback_task_status(task_id, workflow_status, results=None):
     platform_status = to_platform_status(workflow_status)
     payload = {
         "workflowStatus": platform_status,
-        "workflow_status": platform_status,
     }
     if results:
         if isinstance(results, dict):
@@ -67,7 +66,7 @@ def register_with_task_management():
         "ssoClientId": sso_client_id,
         "dashboardUrl": os.getenv("BRIDGE_DASHBOARD_URL", "http://localhost:5174"),
         "supportedTaskTypes": ["BRIDGE_REMOVAL_BATCH", "BRIDGE_REMOVAL_UNIT"],
-        "callbackPath": "/api/projects/{id}/execute"
+        "callbackPath": "/api/v1/projects/{id}/execute"
     }
     try:
         resp = requests.post(register_url, json=payload, timeout=10)

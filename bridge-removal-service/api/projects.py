@@ -1,14 +1,16 @@
 import json
+import logging
 import os
 import threading
-import traceback
 import uuid
 from datetime import datetime
 
 import requests
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, request
 
-from api.auth import require_local_auth, require_auth, require_permission
+from api.auth import require_local_auth, require_auth
+from api.utils import api_ok, api_created, api_accepted, api_no_content, api_error, api_collection
+from api.schemas import validate_body, get_validated_body, ProjectCreateBody, ProjectUpdateBody, ProjectExecuteBody
 from services.project_service import (
     get_project, get_all_projects, set_project,
     project_to_task_response, update_project_fields, delete_project as delete_project_svc,
@@ -16,7 +18,9 @@ from services.project_service import (
 from services.job_service import create_job_record, update_job_status, find_jobs_by_project
 from services.callback_service import callback_task_status
 
-projects_bp = Blueprint("projects", __name__, url_prefix="/api/projects")
+logger = logging.getLogger(__name__)
+
+projects_bp = Blueprint("projects", __name__, url_prefix="/api/v1/projects")
 
 from bridge_removal_task import (
     BridgeRemovalOrchestratorTask,
@@ -29,8 +33,9 @@ TMS_TOKEN = os.getenv("TASK_MANAGEMENT_AUTH_TOKEN", "internal-automation-token")
 
 @projects_bp.route("/<project_id>/execute", methods=["POST"])
 @require_auth
+@validate_body(ProjectExecuteBody)
 def receive_project(project_id: str):
-    body = request.get_json(force=True, silent=True) or {}
+    body = get_validated_body()
     task_type = body.get("task_type", "BRIDGE_REMOVAL_BATCH")
     task_name = body.get("task_name", "")
     input_params = body.get("input_params", {})
@@ -38,7 +43,7 @@ def receive_project(project_id: str):
 
     existing = get_project(project_id)
     if existing:
-        return jsonify({"project_id": project_id, "status": "already_exists", "message": "Project already received"})
+        return api_error("already_exists", "Project already exists", 409)
 
     project = {
         "project_id": project_id,
@@ -105,18 +110,45 @@ def receive_project(project_id: str):
 
     threading.Thread(target=_run_async, daemon=True).start()
 
-    return jsonify({
+    return api_accepted({
         "project_id": project_id,
         "status": "RECEIVED",
-        "message": "Project received, processing started"
+        "message": "Project received, processing started",
     })
 
 
 @projects_bp.route("", methods=["GET"])
 @require_local_auth
 def list_projects():
+    page = request.args.get("page", 1, type=int)
+    per_page = request.args.get("per_page", 20, type=int)
+    status_filter = request.args.get("status")
+    sort = request.args.get("sort", "-created_at")
+
     projects = list(get_all_projects().values())
-    return jsonify([project_to_task_response(p) for p in projects])
+
+    if status_filter:
+        projects = [p for p in projects if p.get("status") == status_filter]
+
+    sort_field = sort.lstrip("-")
+    reverse = sort.startswith("-")
+    projects.sort(
+        key=lambda p: p.get(sort_field, "") or "",
+        reverse=reverse,
+    )
+
+    total = len(projects)
+    start = (page - 1) * per_page
+    end = start + per_page
+    page_items = projects[start:end]
+
+    return api_collection(
+        [project_to_task_response(p) for p in page_items],
+        total=total,
+        page=page,
+        per_page=per_page,
+        base_url="/api/v1/projects",
+    )
 
 
 @projects_bp.route("/<project_id>", methods=["GET"])
@@ -124,17 +156,18 @@ def list_projects():
 def get_project_route(project_id: str):
     project = get_project(project_id)
     if not project:
-        return jsonify({"error": "Project not found"}), 404
-    return jsonify(project_to_task_response(project))
+        return api_error("not_found", "Project not found", 404)
+    return api_ok(project_to_task_response(project))
 
 
 @projects_bp.route("/<project_id>", methods=["PUT"])
 @require_local_auth
+@validate_body(ProjectUpdateBody)
 def update_project(project_id: str):
     project = get_project(project_id)
     if not project:
-        return jsonify({"error": "Project not found"}), 404
-    body = request.get_json(force=True, silent=True) or {}
+        return api_error("not_found", "Project not found", 404)
+    body = get_validated_body()
     updatable_fields = [
         "name", "task_name", "status", "priority", "assignee_id",
         "project_leader_id", "department_id", "department_name",
@@ -144,9 +177,7 @@ def update_project(project_id: str):
     ]
     updates = {}
     for field in updatable_fields:
-        camel = ''.join(word.capitalize() for word in field.split('_'))
-        camel = camel[0].lower() + camel[1:]
-        val = body.get(field) if field in body else body.get(camel)
+        val = body.get(field)
         if val is not None:
             updates[field] = val
     if "name" in body and "task_name" not in body:
@@ -162,7 +193,7 @@ def update_project(project_id: str):
                 ip = {}
         updates["input_params"] = ip
     updated = update_project_fields(project_id, updates)
-    return jsonify(project_to_task_response(updated))
+    return api_ok(project_to_task_response(updated))
 
 
 @projects_bp.route("/<project_id>/jobs", methods=["GET"])
@@ -170,9 +201,9 @@ def update_project(project_id: str):
 def list_project_jobs(project_id: str):
     project = get_project(project_id)
     if not project:
-        return jsonify({"error": "Project not found"}), 404
+        return api_error("not_found", "Project not found", 404)
     jobs = find_jobs_by_project(project_id)
-    return jsonify(jobs)
+    return api_ok(jobs)
 
 
 @projects_bp.route("/<project_id>", methods=["DELETE"])
@@ -180,9 +211,9 @@ def list_project_jobs(project_id: str):
 def delete_project(project_id: str):
     existing = get_project(project_id)
     if not existing:
-        return jsonify({"error": "Project not found"}), 404
+        return api_error("not_found", "Project not found", 404)
     delete_project_svc(project_id)
-    return jsonify({"message": "Project deleted"}), 200
+    return api_no_content()
 
 
 @projects_bp.route("/<project_id>/submit-to-tms", methods=["POST"])
@@ -191,13 +222,13 @@ def submit_project_to_tms(project_id: str):
     from services.callback_service import _task_management_available
     project = get_project(project_id)
     if not project:
-        return jsonify({"error": "Project not found"}), 404
+        return api_error("not_found", "Project not found", 404)
     if project.get("source") != "local":
-        return jsonify({"error": "Only local projects can be submitted to TMS"}), 400
+        return api_error("invalid_source", "Only local projects can be submitted to TMS", 400)
     if project.get("tms_synced"):
-        return jsonify({"error": "Project already synced to TMS"}), 409
+        return api_error("already_synced", "Project already synced to TMS", 409)
     if not _task_management_available:
-        return jsonify({"error": "Task management service is not available"}), 503
+        return api_error("tms_unavailable", "Task management service is not available", 503)
 
     input_params = project.get("input_params", {})
     if isinstance(input_params, dict):
@@ -243,18 +274,19 @@ def submit_project_to_tms(project_id: str):
                 "callback_url": callback_url,
             })
             updated = get_project(project_id)
-            return jsonify(project_to_task_response(updated))
-        return jsonify({"error": f"TMS returned {resp.status_code}", "detail": resp.text}), resp.status_code
+            return api_ok(project_to_task_response(updated))
+        return api_error("tms_error", f"TMS returned {resp.status_code}", resp.status_code)
     except requests.RequestException as e:
-        return jsonify({"error": f"Failed to submit to TMS: {str(e)}"}), 502
+        return api_error("tms_unavailable", f"Failed to submit to TMS: {str(e)}", 502)
 
 
 @projects_bp.route("", methods=["POST"])
 @require_local_auth
+@validate_body(ProjectCreateBody)
 def create_project():
-    body = request.get_json(force=True, silent=True) or {}
+    body = get_validated_body()
     project_id = body.get("project_id") or str(uuid.uuid4())
-    task_type = body.get("task_type") or body.get("type", "BRIDGE_REMOVAL_BATCH")
+    task_type = body.get("task_type", "BRIDGE_REMOVAL_BATCH")
     task_name = body.get("task_name") or body.get("name", "")
     input_params = body.get("input_params", {})
     if isinstance(input_params, str):
@@ -265,7 +297,7 @@ def create_project():
 
     existing = get_project(project_id)
     if existing:
-        return jsonify({"error": "Project already exists"}), 409
+        return api_error("already_exists", "Project already exists", 409)
 
     current_user = getattr(request, 'current_user', {})
     source = "local" if current_user.get("login_type") == "local" else "sso"
@@ -285,22 +317,25 @@ def create_project():
         "job_id": None,
         "source": source,
         "tms_synced": False,
-        "department_id": body.get("department_id") or body.get("departmentId"),
-        "department_name": body.get("department_name") or body.get("departmentName"),
-        "project_leader_id": body.get("project_leader_id") or body.get("projectLeaderId"),
-        "assignee_id": body.get("project_leader_id") or body.get("projectLeaderId"),
+        "department_id": body.get("department_id"),
+        "department_name": body.get("department_name"),
+        "project_leader_id": body.get("project_leader_id"),
+        "assignee_id": body.get("project_leader_id"),
         "created_by_name": body.get("created_by_name") or current_user.get("username"),
-        "created_department_id": body.get("created_department_id") or body.get("createdDepartmentId") or current_user.get("department_id"),
-        "created_department_name": body.get("created_department_name") or body.get("createdDepartmentName") or current_user.get("department_name"),
-        "external_system": body.get("external_system") or body.get("externalSystem"),
-        "external_task_id": body.get("external_task_id") or body.get("externalTaskId"),
-        "external_url": body.get("external_url") or body.get("externalUrl"),
-        "operator_ids": body.get("operator_ids") or body.get("operatorIds") or [],
-        "inspector_ids": body.get("inspector_ids") or body.get("inspectorIds") or [],
+        "created_department_id": body.get("created_department_id") or current_user.get("department_id"),
+        "created_department_name": body.get("created_department_name") or current_user.get("department_name"),
+        "external_system": body.get("external_system"),
+        "external_task_id": body.get("external_task_id"),
+        "external_url": body.get("external_url"),
+        "operator_ids": body.get("operator_ids") or [],
+        "inspector_ids": body.get("inspector_ids") or [],
         "progress": 0,
         "output_results": None,
         "parent_task_id": None,
     }
     set_project(project_id, project)
 
-    return jsonify(project_to_task_response(project)), 201
+    return api_created(
+        project_to_task_response(project),
+        location=f"/api/v1/projects/{project_id}",
+    )

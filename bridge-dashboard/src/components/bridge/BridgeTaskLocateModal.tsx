@@ -127,7 +127,7 @@ export const BridgeTaskLocateModal: React.FC<{ taskId: string; onClose: () => vo
     setLoading(true);
     setError(null);
     setData(null);
-    bridgeApi.get(`/api/tasks/${taskId}/dom-locate`).then(res => {
+    bridgeApi.get(`/api/v1/tasks/${taskId}/dom-locate`).then(res => {
       if (disposed) return;
       setData(res.data as DomLocateResponse);
     }).catch(e => {

@@ -19,14 +19,14 @@ export const LoginForm: React.FC = () => {
       localStorage.setItem('bridge_token', token);
       bridgeAuthService.getMe().then((me) => {
         const bridgeUser: BridgeUser = {
-          user_id: me.user_id,
+          userId: me.userId,
           username: me.username,
-          display_name: me.display_name || me.username,
+          displayName: me.displayName || me.username,
           role: me.role,
           permissions: me.permissions || [],
-          department_id: me.department_id,
-          department_name: me.department_name,
-          login_type: 'sso',
+          departmentId: me.departmentId,
+          departmentName: me.departmentName,
+          loginType: 'sso',
         };
         login(token, bridgeUser);
         navigate('/projects');
@@ -59,16 +59,16 @@ export const LoginForm: React.FC = () => {
     try {
       const data = await bridgeAuthService.login({ username, password });
       const bridgeUser: BridgeUser = {
-        user_id: data.user.user_id,
+        userId: data.user.userId,
         username: data.user.username,
-        display_name: data.user.display_name,
+        displayName: data.user.displayName,
         role: data.user.role,
         permissions: data.user.permissions || [
           'task:execute', 'task:update_global',
           'project:read', 'project:create', 'project:update', 'project:delete',
           'user:read', 'quality:check',
         ],
-        login_type: 'local',
+        loginType: 'local',
       };
       login(data.token, bridgeUser);
       navigate('/projects');
