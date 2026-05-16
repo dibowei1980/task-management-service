@@ -8,6 +8,9 @@ import { buildMaskPath } from '../../utils/pathBuilders';
 import { getErrorMessage } from '../../utils/taskHelpers';
 import { WORKFLOW_TABS, getWorkflowStatus, getWorkflowStatusLabel } from './workflow/types';
 import type { WorkflowStatus, PreprocessSegmentItem } from './workflow/types';
+import { logger } from '../../utils/logger';
+import { toast } from '../common/Toast';
+import { ConfirmDialog } from '../common/ConfirmDialog';
 
 export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projectId }) => {
   const params = useParams();
@@ -23,6 +26,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
   const [page, setPage] = useState(1);
   const pageSize = 30;
   const [userOptions, setUserOptions] = useState<BridgeUser[]>([]);
+  const [confirmState, setConfirmState] = useState<{ title: string; message: string; variant: 'danger' | 'primary'; onConfirm: () => void } | null>(null);
   const [projectById, setProjectById] = useState<Record<string, BridgeTask>>({});
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [showOnlyMineTasks, setShowOnlyMineTasks] = useState(true);
@@ -65,7 +69,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
       }
       setLoadError(null);
     } catch (e) {
-      console.error(e);
+      logger.error('loadProject', e);
       setProject(null);
       setLoadError(`加载项目失败：${getErrorMessage(e, '请检查项目ID/权限/服务连接')}`);
     }
@@ -83,18 +87,18 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
         setLoadError(null);
       }
     } catch (e) {
-      console.error(e);
+      logger.error('loadUnits', e);
       setAllTasks([]);
       setLoadError(`加载任务失败：${getErrorMessage(e, '请检查权限/服务连接')}`);
     }
   }, [effectiveProjectId, project]);
 
   useEffect(() => {
-    loadUnits().catch(console.error);
+    loadUnits().catch((e) => logger.error('loadUnits', e));
   }, [loadUnits]);
 
   useEffect(() => {
-    loadProject().catch(console.error);
+    loadProject().catch((e) => logger.error('loadProject', e));
   }, [loadProject]);
 
   useEffect(() => {
@@ -449,21 +453,27 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
     await updateWorkflow(taskId, workflowStatus);
   };
 
-  const deleteTask = async (task: BridgeTask) => {
-    const ok = window.confirm(`确认删除子任务「${task.name}」？此操作不可恢复。`);
-    if (!ok) return;
-    try {
-      await bridgeProjectService.delete(task.id);
-      await loadUnits();
-    } catch (e) {
-      console.error(e);
-      alert('删除失败');
-    }
+  const deleteTask = (task: BridgeTask) => {
+    setConfirmState({
+      title: '删除子任务',
+      message: `确认删除子任务「${task.name}」？此操作不可恢复。`,
+      variant: 'danger',
+      onConfirm: async () => {
+        setConfirmState(null);
+        try {
+          await bridgeProjectService.delete(task.id);
+          await loadUnits();
+        } catch (e) {
+          logger.error('deleteTask', e);
+          toast.error('删除失败');
+        }
+      },
+    });
   };
 
   const assignAndStart = async (task: BridgeTask) => {
     if (!userId) {
-      alert('无法获取当前用户信息');
+      toast.error('无法获取当前用户信息');
       return;
     }
     try {
@@ -475,61 +485,73 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
       setActiveTab('处理中');
       setFocusTaskId(task.id);
     } catch (e) {
-      console.error(e);
-      alert('任务接收失败');
+      logger.error('acceptTask', e);
+      toast.error('任务接收失败');
     }
   };
 
-  const batchDelete = async () => {
+  const batchDelete = () => {
     if (!selectedTasks.length) return;
-    const ok = window.confirm(`确认批量删除已选 ${selectedTasks.length} 个子任务？此操作不可恢复。`);
-    if (!ok) return;
-    setBatchMaskMessage(null);
-    setBatchMaskError(null);
-    const results = await Promise.allSettled(selectedTasks.map(t => bridgeProjectService.delete(t.id)));
-    const failed = results.filter(r => r.status === 'rejected').length;
-    await loadUnits();
-    setSelectedIds([]);
-    if (failed > 0) {
-      setBatchMaskError(`批量删除完成，失败 ${failed} 个`);
-    } else {
+    setConfirmState({
+      title: '批量删除',
+      message: `确认批量删除已选 ${selectedTasks.length} 个子任务？此操作不可恢复。`,
+      variant: 'danger',
+      onConfirm: async () => {
+        setConfirmState(null);
+        setBatchMaskMessage(null);
+        setBatchMaskError(null);
+        const results = await Promise.allSettled(selectedTasks.map(t => bridgeProjectService.delete(t.id)));
+        const failed = results.filter(r => r.status === 'rejected').length;
+        await loadUnits();
+        setSelectedIds([]);
+        if (failed > 0) {
+          setBatchMaskError(`批量删除完成，失败 ${failed} 个`);
+        } else {
       setBatchMaskMessage('批量删除完成');
-    }
+        }
+      },
+    });
   };
 
-  const batchReceive = async () => {
+  const batchReceive = () => {
     if (!userId) {
-      alert('无法获取当前用户信息');
+      toast.error('无法获取当前用户信息');
       return;
     }
     const targets = selectedTasks.filter(isPendingForReceive);
     if (!targets.length) {
-      alert('已选任务中没有可接收的待处理任务');
+      toast.warning('已选任务中没有可接收的待处理任务');
       return;
     }
-    const ok = window.confirm(`确认接收已选 ${targets.length} 个子任务？`);
-    if (!ok) return;
-    setBatchMaskMessage(null);
-    setBatchMaskError(null);
-    const results = await Promise.allSettled(targets.map(async task => {
-      const operatorIds = Array.isArray(task.operatorIds) && task.operatorIds.length > 0
-        ? Array.from(new Set([userId, ...task.operatorIds]))
-        : [userId];
-      await bridgeTaskService.updateTask(task.id, { assignee_id: userId, operator_ids: operatorIds });
-      await bridgeTaskService.updateWorkflowStatus(task.id, { workflowStatus: '处理中' });
-    }));
-    const failed = results.filter(r => r.status === 'rejected').length;
-    await loadUnits();
-    setActiveTab('处理中');
-    const first = targets.find(t => t?.id);
-    if (first?.id) {
-      setFocusTaskId(first.id);
-    }
-    if (failed > 0) {
-      setBatchMaskError(`批量接收完成，失败 ${failed} 个`);
-    } else {
-      setBatchMaskMessage('批量接收完成');
-    }
+    setConfirmState({
+      title: '批量接收',
+      message: `确认接收已选 ${targets.length} 个子任务？`,
+      variant: 'primary',
+      onConfirm: async () => {
+        setConfirmState(null);
+        setBatchMaskMessage(null);
+        setBatchMaskError(null);
+        const results = await Promise.allSettled(targets.map(async task => {
+          const operatorIds = Array.isArray(task.operatorIds) && task.operatorIds.length > 0
+            ? Array.from(new Set([userId, ...task.operatorIds]))
+            : [userId];
+          await bridgeTaskService.updateTask(task.id, { assignee_id: userId, operator_ids: operatorIds });
+          await bridgeTaskService.updateWorkflowStatus(task.id, { workflowStatus: '处理中' });
+        }));
+        const failed = results.filter(r => r.status === 'rejected').length;
+        await loadUnits();
+        setActiveTab('处理中');
+        const first = targets.find(t => t?.id);
+        if (first?.id) {
+          setFocusTaskId(first.id);
+        }
+        if (failed > 0) {
+          setBatchMaskError(`批量接收完成，失败 ${failed} 个`);
+        } else {
+          setBatchMaskMessage('批量接收完成');
+        }
+      },
+    });
   };
 
   const updatePriority = async (task: BridgeTask, value: number) => {
@@ -537,8 +559,8 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
       await bridgeTaskService.updateTask(task.id, { priority: value });
       await loadUnits();
     } catch (e) {
-      console.error(e);
-      alert('优先级更新失败');
+      logger.error('updatePriority', e);
+      toast.error('优先级更新失败');
     }
   };
 
@@ -814,7 +836,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
         ) : (
           <h1 className="text-2xl font-bold text-gray-900">DOM桥梁去除流程</h1>
         )}
-        <button className="text-sm text-blue-600 hover:text-blue-800" onClick={() => loadUnits().catch(console.error)}>
+        <button className="text-sm text-blue-600 hover:text-blue-800" onClick={() => loadUnits().catch((e) => logger.error('loadUnits', e))}>
           刷新
         </button>
       </div>
@@ -1003,6 +1025,16 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmState !== null}
+        title={confirmState?.title ?? ''}
+        message={confirmState?.message ?? ''}
+        variant={confirmState?.variant ?? 'primary'}
+        confirmLabel="确认"
+        onConfirm={() => confirmState?.onConfirm()}
+        onCancel={() => setConfirmState(null)}
+      />
     </div>
   );
 };

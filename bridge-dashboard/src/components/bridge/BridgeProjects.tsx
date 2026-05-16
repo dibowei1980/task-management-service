@@ -10,6 +10,9 @@ import { parseJson } from '../../utils/json';
 import { getTaskFailureMessage } from '../../utils/taskHelpers';
 import { BRIDGE_APP_EXTERNAL_SYSTEM, BRIDGE_PROJECT_TYPES, parseFeedbackItems } from './projects/types';
 import type { DecomposeOrderStrategy, DecomposeOverwriteStrategy, FeedbackItem } from './projects/types';
+import { logger } from '../../utils/logger';
+import { toast } from '../common/Toast';
+import { ConfirmDialog } from '../common/ConfirmDialog';
 
 export const BridgeProjects: React.FC = () => {
   const { user } = useAuth();
@@ -18,7 +21,6 @@ export const BridgeProjects: React.FC = () => {
   const canReadDepartmentProjects = permissions.includes('project:read');
   const canReadOwnProjects = permissions.includes('project:read');
   const canReadParticipantProjects = permissions.includes('project:read');
-  const canAssignProjectDepartment = permissions.includes('project:update');
   const canDeleteProject = permissions.includes('project:delete');
   const canCreateProject = permissions.includes('project:create');
   const canReadUsers = permissions.includes('user:read');
@@ -43,12 +45,9 @@ export const BridgeProjects: React.FC = () => {
   const [editingProject, setEditingProject] = useState<BridgeTask | null>(null);
   const [infoProject, setInfoProject] = useState<BridgeTask | null>(null);
   const [name, setName] = useState('');
-  const [projectLeaderId, setProjectLeaderId] = useState('');
-  const [projectManagers, setProjectManagers] = useState<BridgeUser[]>([]);
   const [departments, setDepartments] = useState<Array<{ id: string; departmentName: string }>>([]);
   const [userNameById, setUserNameById] = useState<Record<string, string>>({});
   const [userOptions, setUserOptions] = useState<BridgeUser[]>([]);
-  const [departmentId, setDepartmentId] = useState('');
   const [shpFilePath, setShpFilePath] = useState('');
   const [domDir, setDomDir] = useState('');
   const [intermediateRoot, setIntermediateRoot] = useState('D:/data/intermediate');
@@ -68,6 +67,7 @@ export const BridgeProjects: React.FC = () => {
   const [participantIds, setParticipantIds] = useState<string[]>([]);
   const [participantSaving, setParticipantSaving] = useState(false);
   const [isDecomposeStarting, setIsDecomposeStarting] = useState(false);
+  const [confirmState, setConfirmState] = useState<{ title: string; message: string; variant: 'danger' | 'primary'; onConfirm: () => void } | null>(null);
   const decomposePollTickRef = useRef(0);
 
   const loadProjects = useCallback(async () => {
@@ -84,8 +84,15 @@ export const BridgeProjects: React.FC = () => {
         externalSystem: BRIDGE_APP_EXTERNAL_SYSTEM
       })
     ]);
-    const scopedTasks: BridgeTask[] = Array.isArray(scopedData?.content) ? scopedData.content : [];
-    const externalTasks: BridgeTask[] = Array.isArray(externalData?.content) ? externalData.content : [];
+    const extractTasks = (data: unknown): BridgeTask[] => {
+      if (Array.isArray(data)) return data;
+      if (data && typeof data === 'object' && 'content' in data && Array.isArray((data as { content: unknown }).content)) {
+        return (data as { content: BridgeTask[] }).content;
+      }
+      return [];
+    };
+    const scopedTasks: BridgeTask[] = extractTasks(scopedData);
+    const externalTasks: BridgeTask[] = extractTasks(externalData);
     const merged = new Map<string, BridgeTask>();
     for (const t of scopedTasks) {
       if (t?.id) merged.set(t.id, t);
@@ -175,7 +182,7 @@ export const BridgeProjects: React.FC = () => {
         }
       } catch (err) {
         if (disposed) return;
-        console.error(err);
+        logger.error('pollDecomposeProgress', err);
         setDecomposeProgressError(getErrorMessage(err, '获取分解进度失败'));
         setIsDecomposeDone(true);
         stop();
@@ -191,16 +198,14 @@ export const BridgeProjects: React.FC = () => {
   }, [isDecomposeProgressOpen, decomposeProgressProjectId, decomposeProgressTaskId, loadProjects]);
 
   useEffect(() => {
-    loadProjects().catch(console.error);
+    loadProjects().catch((e) => logger.error('loadProjects', e));
   }, [loadProjects]);
 
   useEffect(() => {
-    if (user?.loginType === 'local') {
-      bridgeSystemService.getSystemStatus().then(s => {
-        setIsLocalMode(!s.ssoConnected);
-      });
-    }
-  }, [user?.loginType]);
+    bridgeSystemService.getSystemStatus().then(s => {
+      setIsLocalMode(s.localMode);
+    });
+  }, []);
 
   useEffect(() => {
     bridgeUserService.getDepartments().then(setDepartments).catch(() => {});
@@ -228,13 +233,8 @@ export const BridgeProjects: React.FC = () => {
     if (!isCreating) return;
     setCreateError(null);
     setCreateSuccess(null);
-    bridgeUserService.getProjectManagers().then(setProjectManagers).catch(() => {});
-    if (canAssignProjectDepartment) {
-      bridgeUserService.getDepartments().then(setDepartments).catch(() => {});
-    } else {
-      setDepartments([]);
-    }
-  }, [isCreating, canAssignProjectDepartment]);
+    bridgeUserService.getDepartments().then(setDepartments).catch(() => {});
+  }, [isCreating]);
 
   const getErrorMessage = (err: unknown, fallback: string) => {
     if (err instanceof Error && err.message) return err.message;
@@ -293,7 +293,6 @@ export const BridgeProjects: React.FC = () => {
         status: 'PENDING',
         priority: 1,
         createdByName: user?.username || user?.userId || undefined,
-        projectId,
         parentTaskId: projectId,
         inputParams: JSON.stringify(decomposeInput)
       });
@@ -312,8 +311,8 @@ export const BridgeProjects: React.FC = () => {
 
       await loadProjects();
     } catch (err) {
-      console.error(err);
-      alert(getErrorMessage(err, '启动分解任务失败'));
+      logger.error('confirmDecompose', err);
+      toast.error(getErrorMessage(err, '启动分解任务失败'));
     } finally {
       setIsDecomposeStarting(false);
       if (!isDecomposeProgressOpen) {
@@ -340,8 +339,8 @@ export const BridgeProjects: React.FC = () => {
       setParticipantProject(null);
       await loadProjects();
     } catch (err) {
-      console.error(err);
-      alert(getErrorMessage(err, '保存参与人员失败'));
+      logger.error('saveParticipants', err);
+      toast.error(getErrorMessage(err, '保存参与人员失败'));
     } finally {
       setParticipantSaving(false);
     }
@@ -356,27 +355,22 @@ export const BridgeProjects: React.FC = () => {
     setCreateError(null);
     if (!name.trim()) {
       setCreateError('请输入项目名称');
-      alert('请输入项目名称');
+      toast.warning('请输入项目名称');
       return;
     }
     if (!shpFilePath.trim()) {
       setCreateError('请输入桥梁矢量文件（SHP）路径，或使用“选择文件”按钮');
-      alert('请输入桥梁矢量文件（SHP）路径，或使用“选择文件”按钮');
+      toast.warning('请输入桥梁矢量文件（SHP）路径');
       return;
     }
     if (!shpFilePath.toLowerCase().endsWith('.shp')) {
       setCreateError('桥梁矢量文件（SHP）路径必须以 .shp 结尾');
-      alert('桥梁矢量文件（SHP）路径必须以 .shp 结尾');
+      toast.warning('桥梁矢量文件（SHP）路径必须以 .shp 结尾');
       return;
     }
     if (!domDir.trim()) {
       setCreateError('请输入DOM目录路径');
-      alert('请输入DOM目录路径');
-      return;
-    }
-    if (canAssignProjectDepartment && !departmentId) {
-      setCreateError('请选择责任部门');
-      alert('请选择责任部门');
+      toast.warning('请输入DOM目录路径');
       return;
     }
 
@@ -400,11 +394,11 @@ export const BridgeProjects: React.FC = () => {
         priority: 1,
         externalSystem: BRIDGE_APP_EXTERNAL_SYSTEM,
         externalTaskId,
-        departmentId: canAssignProjectDepartment ? (departmentId || null) : undefined,
+        departmentId: user?.departmentId || null,
         createdByName: user?.username || null,
         createdDepartmentId: user?.departmentId || null,
         createdDepartmentName: user?.departmentName || null,
-        project_leader_id: projectLeaderId || null,
+        project_leader_id: user?.userId || null,
         input_params: JSON.stringify(inputParams)
       });
 
@@ -440,8 +434,6 @@ export const BridgeProjects: React.FC = () => {
 
       setIsCreating(false);
       setName('');
-      setProjectLeaderId('');
-      setDepartmentId('');
       setShpFilePath('');
       setDomDir('');
       setCreateSuccess(null);
@@ -450,7 +442,7 @@ export const BridgeProjects: React.FC = () => {
         openDecomposeModal(confirmed || (created as BridgeTask));
       }
     } catch (err) {
-      console.error(err);
+      logger.error('createProject', err);
       setCreateError(getErrorMessage(err, '创建失败'));
     } finally {
       setCreateSubmitting(false);
@@ -477,7 +469,7 @@ export const BridgeProjects: React.FC = () => {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-gray-900">项目清单</h1>
         <div className="space-x-2">
-          <button className="px-3 py-2 text-sm border rounded" onClick={() => loadProjects().catch(console.error)}>
+          <button className="px-3 py-2 text-sm border rounded" onClick={() => loadProjects().catch((e) => logger.error('loadProjects', e))}>
             刷新
           </button>
           {canCreateProject && (
@@ -600,16 +592,22 @@ export const BridgeProjects: React.FC = () => {
                   {canDeleteProject && r.project.source === 'local' && !r.project.tmsSynced && (
                     <button
                       className="text-emerald-600 hover:text-emerald-800"
-                      onClick={async () => {
-                        const ok = window.confirm(`确认将项目「${r.project.name}」提交到任务管理服务？提交后质检环节将由 TMS 管理。`);
-                        if (!ok) return;
-                        try {
-                          await bridgeProjectService.submitToTms(r.project.id);
-                          await loadProjects();
-                        } catch (err: unknown) {
-                          const msg = err instanceof Error ? err.message : '提交失败';
-                          alert(`提交到 TMS 失败：${msg}`);
-                        }
+                      onClick={() => {
+                        setConfirmState({
+                          title: '提交到 TMS',
+                          message: `确认将项目「${r.project.name}」提交到任务管理服务？提交后质检环节将由 TMS 管理。`,
+                          variant: 'primary',
+                          onConfirm: async () => {
+                            setConfirmState(null);
+                            try {
+                              await bridgeProjectService.submitToTms(r.project.id);
+                              await loadProjects();
+                            } catch (err: unknown) {
+                              const msg = err instanceof Error ? err.message : '提交失败';
+                              toast.error(`提交到 TMS 失败：${msg}`);
+                            }
+                          },
+                        });
                       }}
                     >
                       提交TMS
@@ -618,16 +616,22 @@ export const BridgeProjects: React.FC = () => {
                   {canDeleteProject && (
                     <button
                       className="text-red-600 hover:text-red-800"
-                      onClick={async () => {
-                        const ok = window.confirm(`确认删除项目「${r.project.name}」？此操作不可恢复。`);
-                        if (!ok) return;
-                        try {
-                          await bridgeProjectService.delete(r.project.id);
-                          await loadProjects();
-                        } catch (err) {
-                          console.error(err);
-                          alert('删除失败（可能无权限或存在关联任务）');
-                        }
+                      onClick={() => {
+                        setConfirmState({
+                          title: '删除项目',
+                          message: `确认删除项目「${r.project.name}」？此操作不可恢复。`,
+                          variant: 'danger',
+                          onConfirm: async () => {
+                            setConfirmState(null);
+                            try {
+                              await bridgeProjectService.delete(r.project.id);
+                              await loadProjects();
+                            } catch (err) {
+                              logger.error('deleteProject', err);
+                              toast.error('删除失败（可能无权限或存在关联任务）');
+                            }
+                          },
+                        });
                       }}
                     >
                       删除
@@ -820,26 +824,6 @@ export const BridgeProjects: React.FC = () => {
                   }}
                 />
               </div>
-              <div className="col-span-2">
-                <label className="block text-sm font-medium mb-1">项目负责人</label>
-                <select className="w-full border rounded p-2" value={projectLeaderId} onChange={e => setProjectLeaderId(e.target.value)}>
-                  <option value="">-- 未指定 --</option>
-                  {projectManagers.map(u => (
-                    <option key={u.userId} value={u.userId}>{u.username}</option>
-                  ))}
-                </select>
-              </div>
-              {canAssignProjectDepartment && (
-                <div className="col-span-2">
-                  <label className="block text-sm font-medium mb-1">责任部门</label>
-                  <select className="w-full border rounded p-2" value={departmentId} onChange={e => setDepartmentId(e.target.value)}>
-                    <option value="">-- 请选择部门 --</option>
-                    {departments.map(d => (
-                      <option key={d.id} value={d.id}>{d.departmentName}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
             </div>
             <div className="mt-6 flex justify-end space-x-2">
               <button className="px-4 py-2 text-gray-600 disabled:opacity-50" disabled={createSubmitting} onClick={() => setIsCreating(false)}>取消</button>
@@ -860,7 +844,7 @@ export const BridgeProjects: React.FC = () => {
           onClose={() => setEditingProject(null)}
           onSaved={() => {
             setEditingProject(null);
-            loadProjects().catch(console.error);
+            loadProjects().catch((e) => logger.error('loadProjects', e));
           }}
         />
       )}
@@ -927,7 +911,7 @@ export const BridgeProjects: React.FC = () => {
               <button
                 className="px-4 py-2 bg-blue-600 text-white rounded disabled:opacity-50"
                 disabled={isDecomposeStarting}
-                onClick={() => confirmDecompose().catch(console.error)}
+                onClick={() => confirmDecompose().catch((e) => logger.error('confirmDecompose', e))}
               >
                 {isDecomposeStarting ? '启动中...' : '开始分解'}
               </button>
@@ -1000,6 +984,16 @@ export const BridgeProjects: React.FC = () => {
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmState !== null}
+        title={confirmState?.title ?? ''}
+        message={confirmState?.message ?? ''}
+        variant={confirmState?.variant ?? 'primary'}
+        confirmLabel="确认"
+        onConfirm={() => confirmState?.onConfirm()}
+        onCancel={() => setConfirmState(null)}
+      />
     </div>
   );
 };

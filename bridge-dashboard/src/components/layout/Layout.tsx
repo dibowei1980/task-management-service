@@ -5,6 +5,8 @@ import { bridgeSystemService } from '../../services/bridgeService';
 
 interface SystemStatus {
   taskManagementConnected: boolean;
+  tmsRegistered: boolean;
+  localMode: boolean;
   ssoConnected: boolean;
   upmConnected: boolean;
 }
@@ -14,6 +16,8 @@ export const Layout: React.FC = () => {
   const navigate = useNavigate();
   const [status, setStatus] = useState<SystemStatus>({
     taskManagementConnected: true,
+    tmsRegistered: true,
+    localMode: false,
     ssoConnected: true,
     upmConnected: true,
   });
@@ -33,18 +37,16 @@ export const Layout: React.FC = () => {
     navigate('/');
   };
 
-  const isLocalUser = user?.loginType === 'local';
-
   return (
     <div className="min-h-screen bg-gray-100 flex flex-col">
-      {!status.taskManagementConnected && (
+      {status.localMode && (
         <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 text-center text-sm text-amber-700">
-          任务管理服务未连接 — 任务上报与接收功能不可用，桥梁去除项目可独立运行
+          本地项目模式 — 任务管理服务未连接，任务上报与接收功能不可用，桥梁去除项目可独立运行
         </div>
       )}
-      {isLocalUser && !status.ssoConnected && (
-        <div className="bg-blue-50 border-b border-blue-200 px-4 py-2 text-center text-sm text-blue-700">
-          SSO 服务未连接 — 仅可使用本地账户创建本地项目
+      {!status.ssoConnected && (
+        <div className="bg-red-50 border-b border-red-200 px-4 py-2 text-center text-sm text-red-700">
+          SSO 服务未连接 — 认证服务不可用，请检查网络连接
         </div>
       )}
       <header className="bg-white shadow">
@@ -52,16 +54,16 @@ export const Layout: React.FC = () => {
           <div className="flex items-center space-x-3">
             <div className="text-xl font-bold text-gray-800">桥梁去除系统</div>
             <div className="flex items-center space-x-2 text-xs">
-              <span className={`inline-flex items-center px-2 py-0.5 rounded-full ${status.taskManagementConnected ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
-                <span className={`w-1.5 h-1.5 rounded-full mr-1 ${status.taskManagementConnected ? 'bg-green-500' : 'bg-gray-400'}`}></span>
-                任务管理
+              <span className={`inline-flex items-center px-2 py-0.5 rounded-full ${status.taskManagementConnected ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
+                <span className={`w-1.5 h-1.5 rounded-full mr-1 ${status.taskManagementConnected ? 'bg-green-500' : 'bg-amber-500'}`}></span>
+                {status.localMode ? '本地模式' : '任务管理'}
               </span>
               <span className={`inline-flex items-center px-2 py-0.5 rounded-full ${status.upmConnected ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
                 <span className={`w-1.5 h-1.5 rounded-full mr-1 ${status.upmConnected ? 'bg-green-500' : 'bg-gray-400'}`}></span>
                 用户管理
               </span>
-              <span className={`inline-flex items-center px-2 py-0.5 rounded-full ${status.ssoConnected ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
-                <span className={`w-1.5 h-1.5 rounded-full mr-1 ${status.ssoConnected ? 'bg-green-500' : 'bg-gray-400'}`}></span>
+              <span className={`inline-flex items-center px-2 py-0.5 rounded-full ${status.ssoConnected ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                <span className={`w-1.5 h-1.5 rounded-full mr-1 ${status.ssoConnected ? 'bg-green-500' : 'bg-red-500'}`}></span>
                 SSO
               </span>
             </div>

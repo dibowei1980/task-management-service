@@ -2,6 +2,10 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { bridgeApi } from '../../utils/api';
 import { bridgeTaskService } from '../../services/bridgeService';
+import type { MaskSavePayload } from '../../types/api';
+import { logger } from '../../utils/logger';
+import { toast } from '../common/Toast';
+import { useConfirm } from '../common/useConfirm';
 import { BridgeInpaintResultsPage } from './BridgeInpaintResultsPage';
 import { buildMaskPath, buildMaskCutPath } from '../../utils/pathBuilders';
 import type { LocateItem, DomLocateResponse, PreprocessSegmentsResponse, LoadedTile, ViewState } from './locate/types';
@@ -9,6 +13,7 @@ import { basename, normalizePath, isTiffPath, decodeTiffToRgba, createBitmapFrom
 
 
 export const BridgeTaskLocatePage: React.FC = () => {
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const params = useParams();
   const taskId = params.taskId || '';
   const navigate = useNavigate();
@@ -260,7 +265,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
       const first = await bridgeTaskService.mergeResults(taskId, { overwrite: false }) as { status?: string; code?: string; message?: string; outputPath?: string };
       let result = first;
       if (first?.status === 'need_confirm') {
-        const ok = window.confirm('合并成果已存在，确认覆盖后继续合并？');
+        const ok = await confirm({ title: '合并确认', message: '合并成果已存在，确认覆盖后继续合并？' });
         if (!ok) {
           setRunStatus('已取消合并');
           return;
@@ -276,12 +281,12 @@ export const BridgeTaskLocatePage: React.FC = () => {
       }
       const message = result?.message || '合并失败';
       setRunStatus(message);
-      window.alert(message);
+      toast.error(message);
     } catch (e) {
       const msg = (e && typeof e === 'object' && 'message' in e) ? String((e as { message?: unknown }).message) : '合并失败';
       const message = msg || '合并失败';
       setRunStatus(message);
-      window.alert(message);
+      toast.error(message);
     } finally {
       setMergeRunning(false);
       reloadSegments().catch(() => undefined);
@@ -301,7 +306,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
     if (maskPath) {
       try {
         await bridgeApi.get(`/api/v1/tasks/${taskId}/preprocess-file?path=${encodeURIComponent(maskPath)}`, { responseType: 'arraybuffer' });
-        const ok = window.confirm('当前分段掩膜已存在，是否覆盖？');
+        const ok = await confirm({ title: '掩膜覆盖', message: '当前分段掩膜已存在，是否覆盖？' });
         if (!ok) return;
       } catch (e) {
         const err = e as { response?: { status?: number } };
@@ -788,7 +793,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
       setRunStatus(message);
       return;
     }
-    console.log(selected?.jsonPath);
+    logger.info('maskSave', selected?.jsonPath ?? '');
     const canvas = maskEditCanvasRef.current;
     if (!canvas) {
       const message = '未加载掩膜';
@@ -803,7 +808,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
     try {
       const dataUrl = canvas.toDataURL('image/png');
       const base64 = dataUrl.split(',')[1] || '';
-      const payload: Record<string, string> = {
+      const payload: MaskSavePayload = {
         segment_json_path: selected.jsonPath,
         mask_png_base64: base64,
       };
@@ -811,7 +816,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
         const cutUrl = cutCanvas.toDataURL('image/png');
         payload.mask_cut_png_base64 = cutUrl.split(',')[1] || '';
       }
-      await bridgeApi.post(`/api/v1/tasks/${taskId}/mask-save`, payload);
+      await bridgeTaskService.maskSave(taskId, payload);
       setMaskDirty(false);
       const message = '掩膜已保存';
       setMaskSaveSuccess(message);
@@ -849,11 +854,11 @@ export const BridgeTaskLocatePage: React.FC = () => {
     }
     const hasExistingResultForSegment = !!(target.resultFileUrl || target.resultPath);
     if (hasExistingResultForSegment) {
-      const ok = window.confirm('当前分段已有生成结果，确定要重新生成影像吗？');
+      const ok = await confirm({ title: '重新生成', message: '当前分段已有生成结果，确定要重新生成影像吗？' });
       if (!ok) return;
     }
     if (maskDirty) {
-      const ok = window.confirm('掩膜有改动，是否保存后再生成影像？');
+      const ok = await confirm({ title: '保存掩膜', message: '掩膜有改动，是否保存后再生成影像？' });
       if (!ok) return;
       await triggerMaskSave();
     }
@@ -898,7 +903,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
       return;
     }
     if (maskDirty) {
-      const ok = window.confirm('掩膜有改动，是否保存？');
+      const ok = await confirm({ title: '保存掩膜', message: '掩膜有改动，是否保存？' });
       if (!ok) return;
       if (!maskSaving) {
         await triggerMaskSave();
@@ -917,9 +922,9 @@ export const BridgeTaskLocatePage: React.FC = () => {
     }
   }, [viewMode, showMask, handleShowMaskToggle]);
 
-  const handleCloseEdit = useCallback(() => {
+  const handleCloseEdit = useCallback(async () => {
     if (maskDirty) {
-      const ok = window.confirm('掩膜有改动，确定退出编辑吗？');
+      const ok = await confirm({ title: '退出编辑', message: '掩膜有改动，确定退出编辑吗？', variant: 'danger' });
       if (!ok) return;
     }
     maskDrawingRef.current = false;
@@ -1026,9 +1031,9 @@ export const BridgeTaskLocatePage: React.FC = () => {
     }
   }, [isEditingMask, polygonPoints, closePolygon]);
 
-  const confirmSwitchIfDirty = useCallback(() => {
+  const confirmSwitchIfDirty = useCallback(async () => {
     if (!editMask || !maskDirty) return true;
-    return window.confirm('掩膜有改动，是否保存？');
+    return await confirm({ title: '保存确认', message: '掩膜有改动，是否保存？', variant: 'primary' });
   }, [editMask, maskDirty]);
 
   useEffect(() => {
@@ -2034,8 +2039,8 @@ export const BridgeTaskLocatePage: React.FC = () => {
                 <button
                   className="px-3 py-2 text-sm border rounded disabled:opacity-50"
                   disabled={domIndex <= 0}
-                  onClick={() => {
-                    if (!confirmSwitchIfDirty()) return;
+                  onClick={async () => {
+                    if (!(await confirmSwitchIfDirty())) return;
                     if (editMask && maskDirty) {
                       triggerMaskSave();
                     }
@@ -2047,8 +2052,8 @@ export const BridgeTaskLocatePage: React.FC = () => {
                 <button
                   className="px-3 py-2 text-sm border rounded disabled:opacity-50"
                   disabled={domIndex >= items.length - 1}
-                  onClick={() => {
-                    if (!confirmSwitchIfDirty()) return;
+                  onClick={async () => {
+                    if (!(await confirmSwitchIfDirty())) return;
                     if (editMask && maskDirty) {
                       triggerMaskSave();
                     }
@@ -2302,6 +2307,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
       <div className="mt-3 space-y-1">
         {runStatus && <div className="text-sm text-blue-600">{runStatus}</div>}
       </div>
+      {confirmDialog}
     </div>
   );
 };

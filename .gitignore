@@ -118,3 +118,7 @@ docs/✅BRS-项目结构优化方案.md
 bridge-removal-service/start5050.ps1
 bridge-removal-service/stop5050.ps1
 docs/BRS-前端审查报告.md
+start5050.ps1
+start5174.ps1
+stop5050.ps1
+stop5174.ps1

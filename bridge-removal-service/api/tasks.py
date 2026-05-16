@@ -302,13 +302,18 @@ def api_preprocess_generate(task_id: str):
 @validate_body(TaskExecuteBody)
 def execute_task(task_id: str):
     body = get_validated_body()
-    task_type = body.get("task_type", "")
-    input_params = body.get("input_params", {})
+    existing = get_project(task_id)
+    if not existing:
+        return api_error("not_found", f"Task {task_id} not found", 404)
+
+    task_type = body.get("task_type") or existing.get("task_type", "")
+    input_params = body.get("input_params") or existing.get("input_params", {})
 
     if task_type not in ("BRIDGE_REMOVAL_BATCH", "BRIDGE_REMOVAL_UNIT"):
         return api_error("invalid_task_type", f"Unsupported task type: {task_type}", 400)
 
     job_id = create_job_record(task_id, task_type, input_params)
+    update_project_fields(task_id, {"job_id": job_id, "status": "IN_PROGRESS"})
 
     def _run():
         try:
@@ -323,11 +328,14 @@ def execute_task(task_id: str):
                 "status": task.get_status(),
                 "results": task.get_results(),
             }
-            update_job_status(job_id, task.get_status(), results=results)
+            task_status = task.get_status()
+            update_job_status(job_id, task_status, results=results)
+            update_project_fields(task_id, {"status": task_status, "progress": 100 if task_status == "COMPLETED" else 0})
         except Exception as e:
             error_msg = str(e)
             traceback_str = traceback.format_exc()
             update_job_status(job_id, "FAILED", error=f"{error_msg}\n{traceback_str}")
+            update_project_fields(task_id, {"status": "FAILED"})
 
     threading.Thread(target=_run, daemon=True).start()
     return api_accepted({"job_id": job_id, "status": "STARTED"})

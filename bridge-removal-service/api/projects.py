@@ -74,7 +74,7 @@ def receive_project(project_id: str):
         "inspector_ids": [],
         "progress": 0,
         "output_results": None,
-        "parent_task_id": None,
+        "parent_task_id": body.get("parent_task_id"),
     }
     set_project(project_id, project)
 
@@ -331,7 +331,7 @@ def create_project():
         "inspector_ids": body.get("inspector_ids") or [],
         "progress": 0,
         "output_results": None,
-        "parent_task_id": None,
+        "parent_task_id": body.get("parent_task_id"),
     }
     set_project(project_id, project)
 

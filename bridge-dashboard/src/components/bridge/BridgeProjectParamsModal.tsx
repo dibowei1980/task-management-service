@@ -3,6 +3,8 @@ import { BridgeTask, BridgeUser } from '../../types';
 import { bridgeTaskService, bridgeProjectService } from '../../services/bridgeService';
 import { bridgeUserService } from '../../services/bridgeService';
 import { useAuth } from '../../context/AuthContext';
+import { logger } from '../../utils/logger';
+import { toast } from '../common/Toast';
 
 interface Props {
   project: BridgeTask;
@@ -39,12 +41,12 @@ export const BridgeProjectParamsModal: React.FC<Props> = ({ project, onClose, on
     bridgeTaskService.getTask(project.id)
       .then(result => {
         if (!result.allowed) {
-          alert(result.message || '仅创建部门可修改');
+          toast.warning(result.message || '仅创建部门可修改');
           onClose();
         }
       })
       .catch(() => {
-        alert('权限校验失败');
+        toast.error('权限校验失败');
         onClose();
       });
   }, [project.id, onClose]);
@@ -88,15 +90,15 @@ export const BridgeProjectParamsModal: React.FC<Props> = ({ project, onClose, on
     try {
       if (!paramLocked) {
         if (!shpFilePath.trim()) {
-          alert('请输入桥梁矢量文件（SHP）路径');
+          toast.warning('请输入桥梁矢量文件（SHP）路径');
           return;
         }
         if (!shpFilePath.trim().toLowerCase().endsWith('.shp')) {
-          alert('桥梁矢量文件（SHP）路径必须以 .shp 结尾');
+          toast.warning('桥梁矢量文件（SHP）路径必须以 .shp 结尾');
           return;
         }
         if (!domDir.trim()) {
-          alert('请输入DOM目录路径');
+          toast.warning('请输入DOM目录路径');
           return;
         }
       }
@@ -125,13 +127,13 @@ export const BridgeProjectParamsModal: React.FC<Props> = ({ project, onClose, on
       await bridgeTaskService.updateTask(project.id, payload);
       onSaved();
     } catch (err) {
-      console.error(err);
+      logger.error('handleSave', err);
       const error = err as { userMessage?: string; response?: { status?: number; data?: { message?: string } } };
       const userMsg = error?.userMessage;
       if (error?.response?.status === 403) {
-        alert(userMsg || error?.response?.data?.message || '仅创建部门可修改');
+        toast.error(userMsg || error?.response?.data?.message || '仅创建部门可修改');
       } else {
-        alert(userMsg || error?.response?.data?.message || '保存失败');
+        toast.error(userMsg || error?.response?.data?.message || '保存失败');
       }
     } finally {
       setSaving(false);
@@ -200,7 +202,7 @@ export const BridgeProjectParamsModal: React.FC<Props> = ({ project, onClose, on
 
           <div className="flex justify-end space-x-2 pt-2">
             <button className="px-4 py-2 text-gray-600" onClick={onClose} disabled={saving}>取消</button>
-            <button className="px-4 py-2 bg-blue-600 text-white rounded disabled:opacity-50" onClick={() => handleSave().catch(console.error)} disabled={saving}>
+            <button className="px-4 py-2 bg-blue-600 text-white rounded disabled:opacity-50" onClick={() => handleSave().catch((e) => logger.error('handleSave', e))} disabled={saving}>
               {saving ? '保存中...' : '保存'}
             </button>
           </div>

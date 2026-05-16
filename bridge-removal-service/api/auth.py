@@ -1,4 +1,3 @@
-import hashlib
 import json
 import logging
 import os
@@ -7,10 +6,9 @@ import secrets
 import requests
 from flask import Blueprint, request, session, redirect
 from functools import wraps
-from werkzeug.security import generate_password_hash, check_password_hash
 
 from api.utils import api_ok, api_error
-from api.schemas import validate_body, get_validated_body, LoginBody
+from api.schemas import validate_body, get_validated_body
 
 logger = logging.getLogger(__name__)
 
@@ -18,64 +16,10 @@ auth_bp = Blueprint("auth", __name__, url_prefix="/api/v1/auth")
 
 _sessions: dict = {}
 
-LOCAL_USERS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "local_users.json")
 SSO_BASE_URL = os.getenv("SSO_BASE_URL", "http://localhost:8080")
 SSO_CLIENT_ID = os.getenv("SSO_CLIENT_ID", "bridge-removal-service")
 SSO_CLIENT_SECRET = os.getenv("SSO_CLIENT_SECRET", "")
 SSO_REDIRECT_URI = os.getenv("SSO_REDIRECT_URI", "http://localhost:5050/api/v1/auth/sso/callback")
-BRIDGE_ADMIN_PASSWORD = os.getenv("BRIDGE_ADMIN_PASSWORD", "")
-
-
-def _load_local_users():
-    if os.path.exists(LOCAL_USERS_FILE):
-        with open(LOCAL_USERS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    default = {}
-    if BRIDGE_ADMIN_PASSWORD:
-        default["admin"] = {
-            "password_hash": generate_password_hash(BRIDGE_ADMIN_PASSWORD),
-            "display_name": "管理员",
-            "role": "admin"
-        }
-        _save_local_users(default)
-        logger.info("已创建默认管理员账户（密码来自 BRIDGE_ADMIN_PASSWORD 环境变量）")
-    else:
-        logger.warning("BRIDGE_ADMIN_PASSWORD 未设置，未创建默认管理员账户。请设置环境变量后重启服务。")
-    return default
-
-
-def _save_local_users(users):
-    with open(LOCAL_USERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(users, f, ensure_ascii=False, indent=2)
-
-
-def _check_local_login(username, password):
-    users = _load_local_users()
-    user = users.get(username)
-    if not user:
-        return None
-    stored_hash = user.get("password_hash", "")
-    if stored_hash.startswith("sha256$") or (len(stored_hash) == 64 and "$" not in stored_hash):
-        legacy_hash = hashlib.sha256(password.encode()).hexdigest()
-        if legacy_hash != stored_hash:
-            return None
-        users[username]["password_hash"] = generate_password_hash(password)
-        _save_local_users(users)
-        logger.info("已将用户 %s 的密码哈希从 SHA-256 升级为 werkzeug PBKDF2", username)
-    else:
-        if not check_password_hash(stored_hash, password):
-            return None
-    return {
-        "user_id": username,
-        "username": username,
-        "display_name": user.get("display_name", username),
-        "role": user.get("role", "user"),
-        "permissions": [
-            "task:execute", "task:update_global",
-            "project:read", "project:create", "project:update", "project:delete",
-            "user:read", "quality:check",
-        ]
-    }
 
 
 def _load_session_from_db(token):
@@ -202,41 +146,6 @@ def _register_sso_client(sso_session_id):
         )
     except requests.RequestException:
         pass
-
-
-@auth_bp.route("/login", methods=["POST"])
-@validate_body(LoginBody)
-def local_login():
-    from db.repository import SessionRepository
-    body = get_validated_body()
-    username = body.get("username", "")
-    password = body.get("password", "")
-
-    user_info = _check_local_login(username, password)
-    if not user_info:
-        return api_error("auth_invalid", "Invalid username or password", 401)
-
-    session_token = secrets.token_hex(32)
-    _sessions[session_token] = user_info
-    session["session_token"] = session_token
-    SessionRepository.save({
-        "id": session_token,
-        "user_id": user_info.get("user_id", ""),
-        "username": user_info.get("username", ""),
-        "display_name": user_info.get("display_name", ""),
-        "role": user_info.get("role", "user"),
-        "permissions": json.dumps(user_info.get("permissions", [])),
-    })
-
-    return api_ok({
-        "token": session_token,
-        "user": {
-            "user_id": user_info["user_id"],
-            "username": user_info["username"],
-            "display_name": user_info["display_name"],
-            "role": user_info["role"]
-        }
-    })
 
 
 @auth_bp.route("/logout", methods=["POST"])

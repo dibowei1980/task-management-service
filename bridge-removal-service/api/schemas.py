@@ -7,17 +7,12 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from api.utils import api_error
 
 
-class LoginBody(BaseModel):
-    username: str = Field(min_length=1, max_length=64)
-    password: str = Field(min_length=1, max_length=128)
-
-
 class ProjectCreateBody(BaseModel):
     project_id: Optional[str] = Field(default=None, max_length=64)
     task_type: str = Field(default="BRIDGE_REMOVAL_BATCH", pattern=r"^BRIDGE_REMOVAL_(BATCH|UNIT)$")
     task_name: str = Field(default="", max_length=256)
     name: Optional[str] = Field(default=None, max_length=256)
-    category: str = Field(default="PROJECT", pattern=r"^PROJECT|UNIT$")
+    category: str = Field(default="PROJECT", pattern=r"^(PROJECT|UNIT|SYSTEM_TASK)$")
     priority: int = Field(default=1, ge=1, le=10)
     status: str = Field(default="PENDING", pattern=r"^PENDING|RECEIVED|IN_PROGRESS|COMPLETED|FAILED$")
     input_params: Optional[Union[Dict[str, Any], str]] = Field(default=None)
@@ -33,6 +28,7 @@ class ProjectCreateBody(BaseModel):
     external_url: Optional[str] = Field(default=None, max_length=512)
     operator_ids: Optional[List[str]] = Field(default=None)
     inspector_ids: Optional[List[str]] = Field(default=None)
+    parent_task_id: Optional[str] = Field(default=None, max_length=64)
 
     @model_validator(mode="after")
     def resolve_name(self):
@@ -82,7 +78,7 @@ class WorkflowStatusBody(BaseModel):
 
 
 class TaskExecuteBody(BaseModel):
-    task_type: str = Field(pattern=r"^BRIDGE_REMOVAL_(BATCH|UNIT)$")
+    task_type: Optional[str] = Field(default=None, pattern=r"^BRIDGE_REMOVAL_(BATCH|UNIT)$")
     input_params: Optional[Union[Dict[str, Any], str]] = Field(default=None)
 
 

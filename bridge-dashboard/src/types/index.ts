@@ -6,7 +6,6 @@ export interface BridgeUser {
   permissions: string[];
   departmentId?: string;
   departmentName?: string;
-  loginType?: 'sso' | 'local';
 }
 
 export interface BridgeProject {

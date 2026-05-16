@@ -1,11 +1,7 @@
 import { bridgeApi } from '../utils/api';
+import type { ProjectListParams, ProjectCreatePayload, ProjectUpdatePayload, TaskUpdatePayload, MaskGeneratePayload, MaskSavePayload, MergeResultsPayload, SsoAuthResponse } from '../types/api';
 
 export const bridgeAuthService = {
-  login: async (credentials: { username: string; password: string }) => {
-    const response = await bridgeApi.post('/api/v1/auth/login', credentials);
-    return response.data;
-  },
-
   logout: async () => {
     try {
       await bridgeApi.post('/api/v1/auth/logout');
@@ -20,22 +16,23 @@ export const bridgeAuthService = {
 };
 
 export const bridgeSsoService = {
-  getAuthUrl: async (redirectUri?: string) => {
+  getAuthUrl: async (redirectUri?: string): Promise<SsoAuthResponse> => {
     const params = redirectUri ? { redirect_uri: redirectUri } : {};
     const response = await bridgeApi.get('/api/v1/auth/sso/auth-url', { params });
-    return response.data as { auth_url: string; state: string };
+    const data = response.data as { auth_url: string; state: string };
+    return { authUrl: data.auth_url, state: data.state };
   },
 
   redirectToSsoLogin: async () => {
     const redirectUri = `${window.location.origin}/api/v1/auth/sso/callback`;
     const data = await bridgeSsoService.getAuthUrl(redirectUri);
     sessionStorage.setItem('sso_state', data.state);
-    window.location.href = data.auth_url;
+    window.location.href = data.authUrl;
   },
 };
 
 export const bridgeProjectService = {
-  list: async (params?: Record<string, unknown>) => {
+  list: async (params?: ProjectListParams) => {
     const response = await bridgeApi.get('/api/v1/projects', { params });
     return response.data;
   },
@@ -45,12 +42,12 @@ export const bridgeProjectService = {
     return response.data;
   },
 
-  create: async (payload: Record<string, unknown>) => {
+  create: async (payload: ProjectCreatePayload) => {
     const response = await bridgeApi.post('/api/v1/projects', payload);
     return response.data;
   },
 
-  update: async (projectId: string, payload: Record<string, unknown>) => {
+  update: async (projectId: string, payload: ProjectUpdatePayload) => {
     const response = await bridgeApi.put(`/api/v1/projects/${projectId}`, payload);
     return response.data;
   },
@@ -77,7 +74,7 @@ export const bridgeTaskService = {
     return response.data;
   },
 
-  updateTask: async (taskId: string, payload: Record<string, unknown>) => {
+  updateTask: async (taskId: string, payload: TaskUpdatePayload) => {
     const response = await bridgeApi.put(`/api/v1/tasks/${taskId}`, payload);
     return response.data;
   },
@@ -105,12 +102,12 @@ export const bridgeTaskService = {
     return response;
   },
 
-  maskGenerate: async (taskId: string, payload: Record<string, unknown>) => {
+  maskGenerate: async (taskId: string, payload: MaskGeneratePayload) => {
     const response = await bridgeApi.post(`/api/v1/tasks/${taskId}/mask-generate`, payload);
     return response.data;
   },
 
-  maskSave: async (taskId: string, payload: Record<string, unknown>) => {
+  maskSave: async (taskId: string, payload: MaskSavePayload) => {
     const response = await bridgeApi.post(`/api/v1/tasks/${taskId}/mask-save`, payload);
     return response.data;
   },
@@ -156,7 +153,7 @@ export const bridgeTaskService = {
     return response;
   },
 
-  mergeResults: async (taskId: string, payload: Record<string, unknown>) => {
+  mergeResults: async (taskId: string, payload: MergeResultsPayload) => {
     const response = await bridgeApi.post(`/api/v1/tasks/${taskId}/merge-results`, payload);
     return response.data;
   },
@@ -194,9 +191,9 @@ export const bridgeSystemService = {
   getSystemStatus: async () => {
     try {
       const response = await bridgeApi.get('/api/v1/system/status');
-      return response.data as { taskManagementConnected: boolean; ssoConnected: boolean; upmConnected: boolean };
+      return response.data as { taskManagementConnected: boolean; tmsRegistered: boolean; localMode: boolean; ssoConnected: boolean; upmConnected: boolean };
     } catch {
-      return { taskManagementConnected: false, ssoConnected: false, upmConnected: false };
+      return { taskManagementConnected: false, tmsRegistered: false, localMode: true, ssoConnected: false, upmConnected: false };
     }
   },
 };

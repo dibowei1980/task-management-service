@@ -12,7 +12,8 @@ def _camel_to_snake_request():
         body = request.get_json(force=True, silent=True)
         if isinstance(body, dict):
             from api.utils import to_snake
-            request._cached_json = (to_snake(body), True)
+            converted = to_snake(body)
+            request._cached_json = (converted, converted)
 
 
 def create_app():
@@ -27,6 +28,20 @@ def create_app():
     db.init_app(app)
 
     app.before_request(_camel_to_snake_request)
+
+    @app.after_request
+    def _add_cors_headers(response):
+        origin = request.headers.get("Origin", "")
+        allowed_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:5174")
+        if origin and origin in allowed_origins.split(","):
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+            response.headers["Access-Control-Max-Age"] = "86400"
+        if request.method == "OPTIONS":
+            response.status_code = 200
+        return response
 
     from api.auth import auth_bp
     from api.projects import projects_bp
@@ -46,40 +61,17 @@ def create_app():
     app.register_blueprint(jobs_bp)
 
     with app.app_context():
-        from db.models import ProjectModel, JobModel, SessionModel, LocalUserModel
+        from db.models import ProjectModel, JobModel, SessionModel
         db.create_all()
-        _migrate_local_users_to_db()
 
     return app
 
 
-LOCAL_USERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "local_users.json")
-
-
-def _migrate_local_users_to_db():
-    from db.repository import LocalUserRepository
-    if not os.path.exists(LOCAL_USERS_FILE):
-        return
-    if LocalUserRepository.find_all():
-        return
-    if os.path.exists(LOCAL_USERS_FILE):
-        with open(LOCAL_USERS_FILE, "r", encoding="utf-8") as f:
-            users = json.load(f)
-    else:
-        return
-    for username, data in users.items():
-        LocalUserRepository.save({
-            "username": username,
-            "password_hash": data.get("password_hash", ""),
-            "display_name": data.get("display_name", username),
-            "role": data.get("role", "user"),
-            "permissions": json.dumps(data.get("permissions", [])),
-        })
-
-
 if __name__ == "__main__":
     app = create_app()
-    from services.callback_service import register_with_task_management
-    register_with_task_management()
     port = int(os.getenv("BRIDGE_REMOVAL_PORT", "5050"))
+    with app.app_context():
+        from services.callback_service import register_with_task_management, start_tms_retry_thread
+        register_with_task_management()
+        start_tms_retry_thread()
     app.run(host="0.0.0.0", port=port)

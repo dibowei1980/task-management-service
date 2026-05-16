@@ -28,7 +28,7 @@ health_bp = Blueprint("health", __name__)
 
 @health_bp.route("/health", methods=["GET"])
 def health_check():
-    from services.callback_service import _task_management_available
+    from services.callback_service import is_tms_available, is_tms_registered, is_local_mode
     sso_ok = False
     try:
         resp = requests.get(f"{SSO_BASE_URL}/actuator/health", timeout=3)
@@ -38,17 +38,21 @@ def health_check():
     return api_ok({
         "status": "ok",
         "service": "bridge-removal-service",
-        "task_management_connected": _task_management_available,
+        "task_management_connected": is_tms_available(),
+        "tms_registered": is_tms_registered(),
+        "local_mode": is_local_mode(),
         "sso_connected": sso_ok,
     })
 
 
 @system_bp.route("/status", methods=["GET"])
 def system_status():
-    from services.callback_service import _task_management_available
+    from services.callback_service import is_tms_available, is_tms_registered, is_local_mode
     from api.upm import _check_upm_available
     return api_ok({
-        "task_management_connected": _task_management_available,
+        "task_management_connected": is_tms_available(),
+        "tms_registered": is_tms_registered(),
+        "local_mode": is_local_mode(),
         "sso_connected": _check_sso_available(),
         "upm_connected": _check_upm_available(),
     })
