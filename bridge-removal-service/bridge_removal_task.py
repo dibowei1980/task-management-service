@@ -5,6 +5,7 @@ import json
 import requests
 import uuid
 import time
+from datetime import datetime
 from base_task import BaseTask
 from services.status_mapping import to_platform_status, WORKFLOW_STATUS_DEFAULT
 from services.geo_utils import expand_bbox, polygon_from_bbox, normalize_bbox, extract_bbox_from_geometry
@@ -26,12 +27,99 @@ from services.tms_api import (
     report_progress as _api_report_progress,
     init_project_roles_and_permissions,
 )
+from services.project_service import update_project_fields as _local_update_progress, get_subtasks_local as _local_get_subtasks, get_task_local as _local_get_task
 from services.dependency import build_dependency_graph, merge_step_result, filter_operation_subtasks
 from services.simulation import simulate_end_to_end_flow, simulate_end_to_end_flow_local
 
+def _get_intermediate_root():
+    root = os.getenv("BRS_INTERMEDIATE_ROOT")
+    if root:
+        return root
+    return "./intermediate"
+
+def _get_subtasks(api_url, headers, parent_task_id):
+    result = _api_get_subtasks(api_url, headers, parent_task_id)
+    if result:
+        return result
+    if not api_url:
+        return _local_get_subtasks(parent_task_id)
+    return []
+
+def _get_task(api_url, headers, task_id):
+    result = _api_get_task(api_url, headers, task_id)
+    if result:
+        return result
+    if not api_url:
+        return _local_get_task(task_id)
+    return {}
+
+def _update_task_input_params(api_url, headers, task_id, updates):
+    _api_update_task_input_params(api_url, headers, task_id, updates)
+    if not api_url and task_id and updates:
+        from services.project_service import get_project, set_project
+        project = get_project(task_id)
+        if project:
+            ip = project.get("input_params") or {}
+            if isinstance(ip, str):
+                try:
+                    ip = json.loads(ip)
+                except Exception:
+                    ip = {}
+            if not isinstance(ip, dict):
+                ip = {}
+            ip.update(updates)
+            project["input_params"] = ip
+            set_project(task_id, project)
+
+def _update_task_output_results(api_url, headers, task_id, updates):
+    _api_update_task_output_results(api_url, headers, task_id, updates)
+    if not api_url and task_id and updates:
+        from services.project_service import get_project, set_project
+        project = get_project(task_id)
+        if project:
+            or_ = project.get("output_results") or {}
+            if isinstance(or_, str):
+                try:
+                    or_ = json.loads(or_)
+                except Exception:
+                    or_ = {}
+            if not isinstance(or_, dict):
+                or_ = {}
+            or_.update(updates)
+            project["output_results"] = or_
+            set_project(task_id, project)
+
+def _delete_task_local(task_id):
+    if not task_id:
+        return
+    from services.project_service import delete_project
+    delete_project(task_id)
+
 def run_automation_processing(task_id, input_params):
-    intermediate_root = input_params.get("intermediate_root") or input_params.get("intermediate_path") or "./intermediate"
-    intermediate_path = os.path.join(intermediate_root, str(task_id))
+    intermediate_path = input_params.get("intermediate_path")
+    if not intermediate_path:
+        intermediate_root = input_params.get("intermediate_root")
+        if not intermediate_root:
+            parent_task_id = input_params.get("parent_task_id") or ""
+            if parent_task_id:
+                from services.project_service import get_project
+                parent_project = get_project(parent_task_id)
+                if parent_project:
+                    parent_ip = parent_project.get("input_params") or {}
+                    if isinstance(parent_ip, str):
+                        try:
+                            parent_ip = json.loads(parent_ip)
+                        except (json.JSONDecodeError, TypeError):
+                            parent_ip = {}
+                    intermediate_root = parent_ip.get("intermediate_root")
+        if not intermediate_root:
+            intermediate_root = _get_intermediate_root()
+        parent_task_id = input_params.get("parent_task_id") or ""
+        bridge_id = input_params.get("bridge_id") or ""
+        safe_bridge_id = re.sub(r'[^\w\-.]', '_', str(bridge_id)) if bridge_id else "bridge"
+        project_dir = str(parent_task_id) if parent_task_id else ""
+        intermediate_path = os.path.join(intermediate_root, project_dir, str(task_id), safe_bridge_id)
+    intermediate_path = os.path.normpath(intermediate_path)
     os.makedirs(intermediate_path, exist_ok=True)
 
     shp_path = input_params.get("bridge_vector") or input_params.get("shp_file_path")
@@ -156,6 +244,38 @@ class BridgeRemovalOrchestratorTask(BaseTask):
     遵循“DOM桥梁去除项目设计方案.md”中的定义，负责任务分解、依赖构建和状态初始化。
     """
 
+    def _report_progress(self, api_url, headers, task_id, workflow_status, progress, message):
+        if api_url:
+            _api_report_progress(api_url, headers, task_id, workflow_status, progress, message)
+        try:
+            _local_update_progress(task_id, {"progress": int(progress) if progress is not None else 0})
+        except Exception:
+            pass
+        try:
+            from services.project_service import get_project
+            project = get_project(task_id)
+            if project:
+                ip = project.get("input_params") or {}
+                if isinstance(ip, str):
+                    try:
+                        ip = json.loads(ip)
+                    except Exception:
+                        ip = {}
+                if not isinstance(ip, dict):
+                    ip = {}
+                qa_feedback = ip.get("qa_feedback") or []
+                qa_feedback.append({
+                    "stage": "分解",
+                    "result": "INFO",
+                    "message": message,
+                    "at": datetime.now().isoformat(),
+                    "by": "system",
+                })
+                ip["qa_feedback"] = qa_feedback
+                _local_update_progress(task_id, {"input_params": ip})
+        except Exception:
+            pass
+
     def execute(self):
         self._log("开始执行桥梁去除任务分解...")
 
@@ -172,11 +292,11 @@ class BridgeRemovalOrchestratorTask(BaseTask):
         
         # 清理历史运行信息（qa_feedback），确保只显示本次运行信息
         try:
-            _api_update_task_input_params(api_url, headers, self.task_id, {"qa_feedback": []})
+            _update_task_input_params(api_url, headers, self.task_id, {"qa_feedback": []})
         except Exception as ex:
             self._log(f"清理历史运行信息失败(忽略): {ex}")
 
-        _api_report_progress(api_url, headers, self.task_id, "处理中", 1, "开始分解：正在读取输入参数与DOM索引")
+        self._report_progress(api_url, headers, self.task_id, "处理中", 1, "开始分解：正在读取输入参数与DOM索引")
         shp_file_path = self.input_params.get("shp_file_path")
         if not shp_file_path:
             raise ValueError("输入参数 'shp_file_path' 未提供。")
@@ -189,20 +309,20 @@ class BridgeRemovalOrchestratorTask(BaseTask):
             dom_dir = self.input_params.get("dom_dir")
             dom_sources = list_dom_tiles(dom_dir)
         dom_index = DomTileIndex(dom_sources)
-        _api_report_progress(api_url, headers, self.task_id, "处理中", 8, f"DOM索引就绪：候选DOM数量 {len(dom_sources)}")
+        self._report_progress(api_url, headers, self.task_id, "处理中", 8, f"DOM索引就绪：候选DOM数量 {len(dom_sources)}")
 
         parent_task_id = self.input_params.get("project_id") or self.task_id
-        _api_report_progress(api_url, headers, self.task_id, "处理中", 10, "开始检查已存在子任务")
-        existing_subtasks = _api_get_subtasks(api_url, headers, parent_task_id)
+        self._report_progress(api_url, headers, self.task_id, "处理中", 10, "开始检查已存在子任务")
+        existing_subtasks = _get_subtasks(api_url, headers, parent_task_id)
         existing_subtasks = filter_operation_subtasks(existing_subtasks)
         existing_by_bridge_id = self._index_subtasks_by_bridge_id(existing_subtasks)
 
         task_units = self._create_task_units_from_shp(api_url, headers, shp_file_path, dom_sources, dom_index, parent_task_id)
         if not task_units:
             self.results["message"] = "SHP 文件中未找到有效要素，无法创建任务单元。"
-            _api_report_progress(api_url, headers, self.task_id, "已归档", 100, "分解结束：SHP中未找到有效要素")
+            self._report_progress(api_url, headers, self.task_id, "已归档", 100, "分解结束：SHP中未找到有效要素")
             return
-        _api_report_progress(api_url, headers, self.task_id, "处理中", 18, f"SHP解析完成：桥梁要素数量 {len(task_units)}")
+        self._report_progress(api_url, headers, self.task_id, "处理中", 18, f"SHP解析完成：桥梁要素数量 {len(task_units)}")
 
         units_to_create = []
         deleted_existing = 0
@@ -215,6 +335,8 @@ class BridgeRemovalOrchestratorTask(BaseTask):
                 if overwrite_strategy == "OVERWRITE":
                     for existed in existed_list:
                         _api_delete_task(api_url, headers, existed.get("id"))
+                        if not api_url:
+                            _delete_task_local(existed.get("id"))
                         deleted_existing += 1
                     existing_by_bridge_id.pop(str(bridge_id), None)
                     units_to_create.append(unit)
@@ -224,7 +346,7 @@ class BridgeRemovalOrchestratorTask(BaseTask):
             else:
                 units_to_create.append(unit)
 
-        _api_report_progress(
+        self._report_progress(
             api_url,
             headers,
             self.task_id,
@@ -239,13 +361,13 @@ class BridgeRemovalOrchestratorTask(BaseTask):
             created_tasks = []
         created_task_ids = {t.get("id") for t in (created_tasks or []) if t and t.get("id")}
 
-        all_subtasks = _api_get_subtasks(api_url, headers, parent_task_id)
+        all_subtasks = _get_subtasks(api_url, headers, parent_task_id)
         all_subtasks = filter_operation_subtasks(all_subtasks)
         if not all_subtasks:
             self.results["message"] = "未找到子任务（创建/获取失败）。"
-            _api_report_progress(api_url, headers, self.task_id, "已归档", 100, "分解结束：未找到子任务（创建/获取失败）")
+            self._report_progress(api_url, headers, self.task_id, "已归档", 100, "分解结束：未找到子任务（创建/获取失败）")
             return
-        _api_report_progress(api_url, headers, self.task_id, "处理中", 78, f"子任务创建/获取完成：当前总数 {len(all_subtasks)}")
+        self._report_progress(api_url, headers, self.task_id, "处理中", 78, f"子任务创建/获取完成：当前总数 {len(all_subtasks)}")
 
         # 1. 任务分解：确定需要创建、覆盖或跳过的任务单元
         initial_statuses = {}
@@ -255,7 +377,7 @@ class BridgeRemovalOrchestratorTask(BaseTask):
                     self._recompute_scope_and_source_doms(api_url, headers, t, dom_sources, dom_index)
                 except Exception as ex:
                     self._log(f"更新子任务DOM/impact_scope失败: taskId={t.get('id')}, err={ex}")
-            _api_report_progress(api_url, headers, self.task_id, "处理中", 88, "已更新子任务 impact_scope 与 source_doms")
+            self._report_progress(api_url, headers, self.task_id, "处理中", 88, "已更新子任务 impact_scope 与 source_doms")
         else:
             if created_task_ids:
                 for t in all_subtasks:
@@ -265,27 +387,41 @@ class BridgeRemovalOrchestratorTask(BaseTask):
                         self._recompute_scope_and_source_doms(api_url, headers, t, dom_sources, dom_index)
                     except Exception as ex:
                         self._log(f"更新新增子任务DOM/impact_scope失败: taskId={t.get('id')}, err={ex}")
-                _api_report_progress(api_url, headers, self.task_id, "处理中", 88, f"已更新新增子任务 impact_scope 与 source_doms（{len(created_task_ids)}）")
+                self._report_progress(api_url, headers, self.task_id, "处理中", 88, f"已更新新增子任务 impact_scope 与 source_doms（{len(created_task_ids)}）")
             else:
-                _api_report_progress(api_url, headers, self.task_id, "处理中", 88, "未新增子任务：跳过策略")
+                self._report_progress(api_url, headers, self.task_id, "处理中", 88, "未新增子任务：跳过策略")
 
         # 2. 分割步骤：作为分解的后续步骤执行
         # 分割步骤可能会更新任务的 impact_scope，因此必须在依赖计算之前执行
         preprocess_overwrite = (overwrite_strategy == "OVERWRITE")
         if preprocess_overwrite:
             ids = [t.get("id") for t in all_subtasks if t and t.get("id")]
-            _api_report_progress(api_url, headers, self.task_id, "处理中", 90, f"开始分割{len(ids)}个子任务")
+            self._report_progress(api_url, headers, self.task_id, "处理中", 90, f"开始分割{len(ids)}个子任务")
             self._run_segmentation_step(api_url, headers, ids, overwrite=True)
         else:
             ids = [t.get("id") for t in all_subtasks if t and t.get("id") in created_task_ids]
             if ids:
-                _api_report_progress(api_url, headers, self.task_id, "处理中", 90, f"开始分割新增子任务{len(ids)}个")
+                self._report_progress(api_url, headers, self.task_id, "处理中", 90, f"开始分割新增子任务{len(ids)}个")
                 self._run_segmentation_step(api_url, headers, ids, overwrite=False)
             else:
-                _api_report_progress(api_url, headers, self.task_id, "处理中", 90, "未新增子任务：跳过分割步骤")
+                self._report_progress(api_url, headers, self.task_id, "处理中", 90, "未新增子任务：跳过分割步骤")
         
+        # 2.5 掩膜生成步骤（根据用户选择决定是否执行）
+        mask_gen_strategy = parse_strategy(self.input_params.get("decompose_mask_generate"), "AUTO")
+        if mask_gen_strategy != "SKIP":
+            all_subtasks_for_mask = _get_subtasks(api_url, headers, parent_task_id)
+            all_subtasks_for_mask = filter_operation_subtasks(all_subtasks_for_mask)
+            mask_ids = [t.get("id") for t in all_subtasks_for_mask if t and t.get("id")]
+            if mask_ids:
+                self._report_progress(api_url, headers, self.task_id, "处理中", 92, f"开始掩膜生成{len(mask_ids)}个子任务")
+                self._run_mask_generation_step(api_url, headers, mask_ids)
+            else:
+                self._report_progress(api_url, headers, self.task_id, "处理中", 92, "无子任务：跳过掩膜生成步骤")
+        else:
+            self._report_progress(api_url, headers, self.task_id, "处理中", 92, "跳过掩膜生成步骤（用户选择）")
+
         # 重新获取所有子任务，以确保 impact_scope 是分割步骤更新后的最新值
-        all_subtasks = _api_get_subtasks(api_url, headers, parent_task_id)
+        all_subtasks = _get_subtasks(api_url, headers, parent_task_id)
         all_subtasks = filter_operation_subtasks(all_subtasks)
 
         # 3. 依赖构建与状态初始化
@@ -293,21 +429,22 @@ class BridgeRemovalOrchestratorTask(BaseTask):
         if rebuild_all is None:
             rebuild_all = True
         if rebuild_all:
-            for t in all_subtasks:
-                try:
-                    _api_clear_dependencies(api_url, headers, t.get("id"))
-                except Exception as ex:
-                    _api_report_progress(api_url, headers, self.task_id, "处理中", 92, f"清理子任务依赖失败: taskId={t.get('id')}, err={ex}")
-            _api_report_progress(api_url, headers, self.task_id, "处理中", 92, "已清理旧依赖关系")
+            if api_url:
+                for t in all_subtasks:
+                    try:
+                        _api_clear_dependencies(api_url, headers, t.get("id"))
+                    except Exception as ex:
+                        self._report_progress(api_url, headers, self.task_id, "处理中", 92, f"清理子任务依赖失败: taskId={t.get('id')}, err={ex}")
+            self._report_progress(api_url, headers, self.task_id, "处理中", 92, "已清理旧依赖关系")
 
             initial_statuses = self._determine_initial_statuses(api_url, headers, all_subtasks, order_strategy)
             self._update_subtask_statuses_via_api(api_url, headers, initial_statuses)
-            _api_report_progress(api_url, headers, self.task_id, "处理中", 98, "已构建依赖并设置子任务初始状态")
+            self._report_progress(api_url, headers, self.task_id, "处理中", 98, "已构建依赖并设置子任务初始状态")
 
         self.results["created_subtask_count"] = len(units_to_create)
         self.results["subtask_initial_statuses"] = initial_statuses
         self._log(f"任务分解与分割完成：新建 {len(units_to_create)} 个子任务，当前总数 {len(all_subtasks)}。")
-        _api_report_progress(
+        self._report_progress(
             api_url,
             headers,
             self.task_id,
@@ -316,6 +453,13 @@ class BridgeRemovalOrchestratorTask(BaseTask):
             f"分解与分割完成：新建 {len(units_to_create)} 个子任务，当前总数 {len(all_subtasks)}"
         )
 
+        if parent_task_id != self.task_id:
+            try:
+                _local_update_progress(parent_task_id, {"status": "IN_PROGRESS", "progress": 0})
+                self._log(f"已更新原始项目 {parent_task_id} 状态为 IN_PROGRESS")
+            except Exception as ex:
+                self._log(f"更新原始项目 {parent_task_id} 状态失败: {ex}")
+
     def _run_segmentation_step(self, api_url, headers, task_ids, overwrite=False):
         """执行分割步骤：批量生成分段数据包"""
         ids = [tid for tid in (task_ids or []) if tid]
@@ -323,7 +467,7 @@ class BridgeRemovalOrchestratorTask(BaseTask):
             return
         
         self._log("开始执行分割步骤（生成分段数据包）...")
-        _api_report_progress(api_url, headers, self.task_id, "处理中", 90, f"开始执行分割步骤（生成分段数据包）...")
+        self._report_progress(api_url, headers, self.task_id, "处理中", 90, f"开始执行分割步骤（生成分段数据包）...")
         
         max_side_px = self.input_params.get("preprocess_max_side_px") or 1024
         try:
@@ -340,40 +484,142 @@ class BridgeRemovalOrchestratorTask(BaseTask):
         total = len(ids)
         errors = []
         for idx, task_id in enumerate(ids):
-            _api_report_progress(api_url, headers, self.task_id, "处理中", 90, f"正在执行分割（生成数据包）：{idx+1}/{total}")
+            self._report_progress(api_url, headers, self.task_id, "处理中", 90, f"正在执行分割（生成数据包）：{idx+1}/{total}")
             err = None
             try:
-                resp = requests.post(
-                    f"{api_url}/tasks/{task_id}/preprocess-generate",
-                    headers=headers,
-                    params={"maxSidePx": max_side_px},
-                    timeout=timeout_seconds
-                )
-                if resp.status_code not in (200, 201):
-                    err = f"HTTP {resp.status_code}"
-                else:
-                    data = resp.json() if resp.content else {}
-                    manifest_error = data.get("manifestError")
-                    if manifest_error:
-                        err = str(manifest_error)
+                if api_url:
+                    resp = requests.post(
+                        f"{api_url}/tasks/{task_id}/preprocess-generate",
+                        headers=headers,
+                        json={"max_side_px": max_side_px, "overwrite": overwrite},
+                        timeout=timeout_seconds
+                    )
+                    if resp.status_code not in (200, 201):
+                        err = f"HTTP {resp.status_code}"
                     else:
-                        try:
-                            self._update_impact_scope_from_preprocess(api_url, headers, task_id)
-                        except Exception as ex:
-                            err = str(ex)
+                        data = resp.json() if resp.content else {}
+                        manifest_error = data.get("manifestError")
+                        if manifest_error:
+                            err = str(manifest_error)
+                else:
+                    from services.project_service import get_project
+                    subtask = get_project(task_id)
+                    if subtask:
+                        sub_params = subtask.get("input_params", {})
+                        if isinstance(sub_params, str):
+                            try:
+                                sub_params = json.loads(sub_params)
+                            except Exception:
+                                sub_params = {}
+                        sub_intermediate_root = sub_params.get("intermediate_root") or self.input_params.get("intermediate_root")
+                        unit_task = BridgeRemovalUnitProcessorTask(task_id=task_id, input_params=sub_params)
+                        result = unit_task.preprocess_segmentation(
+                            api_url=None,
+                            headers=None,
+                            intermediate_root=sub_intermediate_root,
+                            overwrite=False,
+                            param_overrides={"preprocess_max_side_px": max_side_px},
+                        )
+                        if result is None:
+                            err = "preprocess_segmentation returned None (unexpected)"
+                    else:
+                        err = f"subtask {task_id} not found in local db"
+                if not err:
+                    try:
+                        self._update_impact_scope_from_preprocess(api_url, headers, task_id)
+                    except Exception as ex:
+                        err = str(ex)
             except Exception as ex:
                 err = str(ex)
             if err:
                 errors.append({"task_id": task_id, "error": err})
-                _api_report_progress(api_url, headers, self.task_id, "处理中", 90, f"任务 {task_id} 分割失败: {err}")
+                self._report_progress(api_url, headers, self.task_id, "处理中", 90, f"任务 {task_id} 分割失败: {err}")
                 self._log(f"任务 {task_id} 分割失败: {err}")
 
         if errors:
-            _api_update_task_output_results(api_url, headers, self.task_id, {"segmentation_errors": errors})
+            _update_task_output_results(api_url, headers, self.task_id, {"segmentation_errors": errors})
             raise RuntimeError(f"分割失败: {len(errors)}/{total}")
 
+    def _run_mask_generation_step(self, api_url, headers, task_ids):
+        """分割完成后批量执行掩膜生成"""
+        ids = [tid for tid in (task_ids or []) if tid]
+        if not ids:
+            return
+
+        self._log("开始执行掩膜生成步骤...")
+        self._report_progress(api_url, headers, self.task_id, "处理中", 94, "开始执行掩膜生成步骤...")
+
+        timeout_seconds = self.input_params.get("preprocess_api_timeout_sec") or 300
+        try:
+            timeout_seconds = int(timeout_seconds)
+        except Exception:
+            timeout_seconds = 300
+
+        total = len(ids)
+        errors = []
+        for idx, task_id in enumerate(ids):
+            self._report_progress(api_url, headers, self.task_id, "处理中", 94, f"正在生成掩膜：{idx+1}/{total}")
+            err = None
+            try:
+                if api_url:
+                    resp = requests.post(
+                        f"{api_url}/tasks/{task_id}/mask-generate",
+                        headers=headers,
+                        json={},
+                        timeout=timeout_seconds,
+                    )
+                    if resp.status_code not in (200, 201):
+                        err = f"HTTP {resp.status_code}"
+                    else:
+                        data = resp.json() if resp.content else {}
+                        result_data = data.get("data") or data
+                        mask_manifest = result_data.get("maskManifest") or result_data.get("mask_manifest") or {}
+                        if mask_manifest.get("error"):
+                            err = str(mask_manifest["error"])
+                else:
+                    from services.project_service import get_project
+                    subtask = get_project(task_id)
+                    if subtask:
+                        sub_params = subtask.get("input_params", {})
+                        if isinstance(sub_params, str):
+                            try:
+                                sub_params = json.loads(sub_params)
+                            except Exception:
+                                sub_params = {}
+                        task_dir = sub_params.get("intermediate_path")
+                        if not task_dir:
+                            intermediate_root = sub_params.get("intermediate_root")
+                            if not intermediate_root:
+                                intermediate_root = _get_intermediate_root()
+                            parent_task_id = subtask.get("parent_task_id") or sub_params.get("parent_task_id") or ""
+                            bridge_id = sub_params.get("bridge_id") or ""
+                            safe_bridge_id = re.sub(r'[^\w\-.]', '_', str(bridge_id)) if bridge_id else "bridge"
+                            project_dir = str(parent_task_id) if parent_task_id else ""
+                            task_dir = os.path.join(intermediate_root, project_dir, str(task_id), safe_bridge_id)
+                        task_dir = os.path.normpath(task_dir)
+                        segments_dir = os.path.join(task_dir, "segments")
+                        masks_dir = os.path.join(task_dir, "masks")
+                        os.makedirs(masks_dir, exist_ok=True)
+                        if os.path.isdir(segments_dir):
+                            from bridge_removal.mask_pipeline import generate_bridge_masks
+                            generate_bridge_masks(segments_dir, masks_dir)
+                        else:
+                            err = "segments directory not found"
+                    else:
+                        err = f"subtask {task_id} not found in local db"
+            except Exception as ex:
+                err = str(ex)
+            if err:
+                errors.append({"task_id": task_id, "error": err})
+                self._report_progress(api_url, headers, self.task_id, "处理中", 94, f"任务 {task_id} 掩膜生成失败: {err}")
+                self._log(f"任务 {task_id} 掩膜生成失败: {err}")
+
+        if errors:
+            _update_task_output_results(api_url, headers, self.task_id, {"mask_generation_errors": errors})
+            self._log(f"掩膜生成部分失败: {len(errors)}/{total}")
+
     def _update_impact_scope_from_preprocess(self, api_url, headers, task_id):
-        task_data = _api_get_task(api_url, headers, task_id)
+        task_data = _get_task(api_url, headers, task_id)
         raw_output = task_data.get("outputResults") or "{}"
         if isinstance(raw_output, str):
             try:
@@ -405,7 +651,7 @@ class BridgeRemovalOrchestratorTask(BaseTask):
             return False
         merged_bbox = [min_x, min_y, max_x, max_y]
         new_impact_scope = polygon_from_bbox(merged_bbox)
-        _api_update_task_input_params(api_url, headers, task_id, {"impact_scope": new_impact_scope})
+        _update_task_input_params(api_url, headers, task_id, {"impact_scope": new_impact_scope})
         return True
 
         
@@ -459,7 +705,10 @@ class BridgeRemovalOrchestratorTask(BaseTask):
             if filtered:
                 created_adj[source_id] = filtered
         if created_adj:
-            _api_create_dependencies(api_url, headers, created_adj)
+            if api_url:
+                _api_create_dependencies(api_url, headers, created_adj)
+            else:
+                self._log("本地模式：跳过新增子任务的远程依赖创建")
 
         def _is_predecessor_satisfied(task_obj):
             if not task_obj:
@@ -492,7 +741,7 @@ class BridgeRemovalOrchestratorTask(BaseTask):
     def _create_task_units_from_shp(self, api_url, headers, shp_file_path, dom_sources, dom_index: DomTileIndex, parent_task_id):
         shp_path, shx_path, dbf_path = validate_shp_components(shp_file_path)
         self._log(f"正在从 '{shp_path}' 读取桥梁矢量特征（SHP）...")
-        _api_report_progress(api_url, headers, self.task_id, "处理中", 12, "开始解析SHP桥梁要素")
+        self._report_progress(api_url, headers, self.task_id, "处理中", 12, "开始解析SHP桥梁要素")
         try:
             bboxes = read_shp_record_bboxes(shp_path)
             geoms = read_shp_record_geometries(shp_path)
@@ -503,7 +752,7 @@ class BridgeRemovalOrchestratorTask(BaseTask):
 
         units = []
         count = min(len(bboxes), len(records))
-        _api_report_progress(api_url, headers, self.task_id, "处理中", 13, f"SHP读取完成：记录数 {count}")
+        self._report_progress(api_url, headers, self.task_id, "处理中", 13, f"SHP读取完成：记录数 {count}")
         report_every = 1
         if count >= 200:
             report_every = max(1, count // 20)
@@ -542,7 +791,7 @@ class BridgeRemovalOrchestratorTask(BaseTask):
             filtered_doms = dom_index.filter_by_bbox(expanded_bbox)
             if not filtered_doms:
                 filtered_doms = candidate_doms
-            intermediate_root = self.input_params.get("intermediate_root") or "/mnt/intermediate"
+            intermediate_root = self.input_params.get("intermediate_root") or _get_intermediate_root()
             centerline_geojson = None
             centerline_missing_reason = None
             bridge_width = None
@@ -588,25 +837,70 @@ class BridgeRemovalOrchestratorTask(BaseTask):
                 "bridge_vector": shp_path,
                 "bridge_feature": {"bbox": bbox, "record_index": i + 1, "properties": properties},
                 "source_doms": filtered_doms,
+                "intermediate_root": intermediate_root,
+                "parent_task_id": parent_task_id,
                 "qa_feedback": []
             }
             unit = {
                 "name": f"桥梁处理 - {bridge_id}",
-                "type": "BRIDGE_REMOVAL_UNIT",
-                "parentTaskId": parent_task_id,
-                "inputParams": json.dumps(input_params)
+                "task_type": "BRIDGE_REMOVAL_UNIT",
+                "parent_task_id": parent_task_id,
+                "input_params": json.dumps(input_params)
             }
             units.append(unit)
             if count > 0 and (i == 0 or i == count - 1 or (i + 1) % report_every == 0):
                 progress = 12 + int((i + 1) * 5 / count)
                 progress = min(17, max(12, progress))
-                _api_report_progress(api_url, headers, self.task_id, "处理中", progress, f"SHP解析进度 {i+1}/{count}")
+                self._report_progress(api_url, headers, self.task_id, "处理中", progress, f"SHP解析进度 {i+1}/{count}")
         self._log(f"从SHP文件中分解出 {len(units)} 个任务单元。")
         return units
 
 
+    def _create_subtasks_local(self, task_units):
+        from services.project_service import set_project, get_project
+        created_tasks = []
+        total = len(task_units) if task_units else 0
+        report_every = 1
+        if total >= 200:
+            report_every = max(1, total // 20)
+        elif total >= 50:
+            report_every = max(1, total // 10)
+        for unit in task_units:
+            subtask_id = unit.get("id") or str(uuid.uuid4())
+            unit["id"] = subtask_id
+            subtask = {
+                "project_id": subtask_id,
+                "name": unit.get("name", ""),
+                "task_name": unit.get("name", ""),
+                "task_type": unit.get("task_type", "BRIDGE_REMOVAL_UNIT"),
+                "category": "SUBTASK",
+                "status": "PENDING",
+                "priority": unit.get("priority", 5),
+                "input_params": unit.get("input_params", {}),
+                "output_results": None,
+                "parent_task_id": unit.get("parent_task_id") or self.task_id,
+                "assignee_id": unit.get("assignee_id"),
+                "project_leader_id": unit.get("assignee_id"),
+                "department_id": unit.get("department_id"),
+                "department_name": unit.get("department_name"),
+                "created_by_name": unit.get("created_by_name"),
+                "created_department_id": unit.get("created_department_id"),
+                "created_department_name": unit.get("created_department_name"),
+                "progress": 0,
+            }
+            set_project(subtask_id, subtask)
+            created_tasks.append({"id": subtask_id, **unit})
+            idx = len(created_tasks)
+            if total > 0 and (idx == 1 or idx == total or idx % report_every == 0):
+                progress = 30 + int(45 * idx / total)
+                self._report_progress(None, None, self.task_id, "处理中", progress, f"创建子任务中：{idx}/{total}")
+            self._log(f"本地创建子任务 {subtask_id}")
+        return created_tasks
+
     def _create_subtasks_via_api(self, api_url, headers, task_units):
         """通过API为每个任务单元创建子任务。"""
+        if not api_url:
+            return self._create_subtasks_local(task_units)
         created_tasks = []
         total = len(task_units) if task_units else 0
         report_every = 1
@@ -624,7 +918,7 @@ class BridgeRemovalOrchestratorTask(BaseTask):
                 idx = len(created_tasks)
                 if total > 0 and (idx == 1 or idx == total or idx % report_every == 0):
                     progress = 30 + int(45 * idx / total)
-                    _api_report_progress(api_url, headers, self.task_id, "处理中", progress, f"创建子任务中：{idx}/{total}")
+                    self._report_progress(api_url, headers, self.task_id, "处理中", progress, f"创建子任务中：{idx}/{total}")
                 self._log(f"成功创建任务 {task_data.get('id')}。")
             except requests.exceptions.RequestException as e:
                 raise RuntimeError(f"为 '{unit['name']}' 创建子任务时API调用失败: {e}")
@@ -649,7 +943,10 @@ class BridgeRemovalOrchestratorTask(BaseTask):
         
         units_sorted = sorted(units_with_scope, key=lambda x: bridge_sort_key(x.get("bridge_id")), reverse=(order_strategy == "DESC"))
         adj, in_degree = build_dependency_graph(units_sorted)
-        _api_create_dependencies(api_url, headers, adj)
+        if api_url:
+            _api_create_dependencies(api_url, headers, adj)
+        else:
+            self._log("本地模式：跳过远程依赖创建，依赖关系仅在本地记录")
         self._log(f"依赖图入度: {in_degree}")
 
         initial_statuses = {}
@@ -698,42 +995,68 @@ class BridgeRemovalOrchestratorTask(BaseTask):
             filtered = candidate
 
         updates = {"source_doms": filtered, "impact_scope": impact_scope}
-        _api_update_task_input_params(api_url, headers, task_data.get("id"), updates)
+        _update_task_input_params(api_url, headers, task_data.get("id"), updates)
 
 
     def _update_subtask_statuses_via_api(self, api_url, headers, initial_statuses):
         """通过API批量或逐个更新子任务的初始状态。"""
-        self._log("正在通过API设置子任务的初始状态...")
+        self._log("正在设置子任务的初始状态...")
         for task_id, status_info in initial_statuses.items():
             task_status = status_info.get("task_status", "PENDING")
             workflow_status = status_info.get("workflow_status", WORKFLOW_STATUS_DEFAULT)
             try:
-                response = requests.patch(
-                    f"{api_url}/tasks/{task_id}/status",
-                    headers=headers,
-                    params={"status": task_status},
-                    timeout=15
-                )
-                response.raise_for_status()
-                _api_update_task_input_params(api_url, headers, task_id, {"workflow_status": workflow_status})
+                if api_url:
+                    response = requests.patch(
+                        f"{api_url}/tasks/{task_id}/status",
+                        headers=headers,
+                        params={"status": task_status},
+                        timeout=15
+                    )
+                    response.raise_for_status()
+                else:
+                    _local_update_progress(task_id, {"status": task_status})
+                _update_task_input_params(api_url, headers, task_id, {"workflow_status": workflow_status})
                 self._log(f"成功将任务 {task_id} 状态更新为 '{task_status}'，流程状态为 '{workflow_status}'。")
             except requests.exceptions.RequestException as e:
-                # 在实际生产中，这里可能需要一个补偿事务或重试逻辑
                 raise RuntimeError(f"更新任务 {task_id} 状态为 '{task_status}' 时API调用失败: {e}")
+            except Exception as e:
+                self._log(f"更新任务 {task_id} 状态失败: {e}")
 
 
 class BridgeRemovalUnitProcessorTask(BaseTask):
     def execute(self):
         api_url, headers = get_api_config()
-        task_data = _api_get_task(api_url, headers, self.task_id)
+        task_data = _get_task(api_url, headers, self.task_id)
         input_params = parse_input_params(task_data.get("inputParams"))
 
         workflow_status = input_params.get("workflow_status") or WORKFLOW_STATUS_DEFAULT
 
-        intermediate_path = input_params.get("intermediate_path") or f"./intermediate/{self.task_id}"
+        intermediate_path = input_params.get("intermediate_path")
+        if not intermediate_path:
+            intermediate_root = input_params.get("intermediate_root")
+            if not intermediate_root:
+                parent_task_id = input_params.get("parent_task_id") or ""
+                if parent_task_id:
+                    parent_project = get_project(parent_task_id)
+                    if parent_project:
+                        parent_ip = parent_project.get("input_params") or {}
+                        if isinstance(parent_ip, str):
+                            try:
+                                parent_ip = json.loads(parent_ip)
+                            except (json.JSONDecodeError, TypeError):
+                                parent_ip = {}
+                        intermediate_root = parent_ip.get("intermediate_root")
+            if not intermediate_root:
+                intermediate_root = _get_intermediate_root()
+            parent_task_id = input_params.get("parent_task_id") or ""
+            bridge_id = input_params.get("bridge_id") or ""
+            safe_bridge_id = re.sub(r'[^\w\-.]', '_', str(bridge_id)) if bridge_id else "bridge"
+            project_dir = str(parent_task_id) if parent_task_id else ""
+            intermediate_path = os.path.join(intermediate_root, project_dir, str(self.task_id), safe_bridge_id)
+        intermediate_path = os.path.normpath(intermediate_path)
         os.makedirs(intermediate_path, exist_ok=True)
         if input_params.get("intermediate_path") != intermediate_path:
-            _api_update_task_input_params(api_url, headers, self.task_id, {"intermediate_path": intermediate_path})
+            _update_task_input_params(api_url, headers, self.task_id, {"intermediate_path": intermediate_path})
 
         manifest = {
             "manifest_version": 1,
@@ -761,7 +1084,7 @@ class BridgeRemovalUnitProcessorTask(BaseTask):
         merge_step_result(manifest, run_interactive_correction(self.task_id, input_params))
 
         if any((s or {}).get("status") == "failed" for s in (manifest.get("steps") or [])):
-            _api_update_task_output_results(api_url, headers, self.task_id, {"manifest": manifest})
+            _update_task_output_results(api_url, headers, self.task_id, {"manifest": manifest})
             _api_set_workflow_status(api_url, headers, self.task_id, "需修改")
             _api_update_task_status(api_url, headers, self.task_id, "PAUSED")
             self.results["manifest"] = manifest
@@ -785,7 +1108,7 @@ class BridgeRemovalUnitProcessorTask(BaseTask):
         if "writeback_outputs" in manifest["artifacts"]:
             del manifest["artifacts"]["writeback_outputs"]
 
-        _api_update_task_output_results(api_url, headers, self.task_id, {"manifest": manifest})
+        _update_task_output_results(api_url, headers, self.task_id, {"manifest": manifest})
         _api_set_workflow_status(api_url, headers, self.task_id, "待初检")
         _api_update_task_status(api_url, headers, self.task_id, "PAUSED")
 
@@ -796,7 +1119,7 @@ class BridgeRemovalUnitProcessorTask(BaseTask):
         task_id = self.task_id
         
         # 1. 获取最新任务数据
-        task_data = _api_get_task(api_url, headers, task_id)
+        task_data = _get_task(api_url, headers, task_id)
         input_params = parse_input_params(task_data.get("inputParams"))
         if param_overrides:
             input_params.update(param_overrides)
@@ -818,11 +1141,28 @@ class BridgeRemovalUnitProcessorTask(BaseTask):
         if not safe_bridge_id:
             safe_bridge_id = str(task_id)
 
-        default_root = intermediate_root or "./intermediate"
-        intermediate_path = input_params.get("intermediate_path") or os.path.join(str(default_root), str(task_id), safe_bridge_id)
+        resolved_intermediate_root = intermediate_root or input_params.get("intermediate_root")
+        if not resolved_intermediate_root and not api_url:
+            parent_id = task_data.get("parentTaskId") or task_data.get("parent_task_id") or ""
+            if parent_id:
+                from services.project_service import get_project
+                parent_project = get_project(parent_id)
+                if parent_project:
+                    parent_ip = parent_project.get("input_params", {})
+                    if isinstance(parent_ip, str):
+                        try:
+                            parent_ip = json.loads(parent_ip)
+                        except Exception:
+                            parent_ip = {}
+                    resolved_intermediate_root = parent_ip.get("intermediate_root")
+        default_root = resolved_intermediate_root or _get_intermediate_root()
+        parent_task_id = task_data.get("parentTaskId") or task_data.get("parent_task_id") or ""
+        project_dir = str(parent_task_id) if parent_task_id else ""
+        intermediate_path = input_params.get("intermediate_path") or os.path.join(str(default_root), project_dir, str(task_id), safe_bridge_id)
+        intermediate_path = os.path.normpath(intermediate_path)
         
         if input_params.get("intermediate_path") != intermediate_path:
-            _api_update_task_input_params(api_url, headers, task_id, {"intermediate_path": intermediate_path})
+            _update_task_input_params(api_url, headers, task_id, {"intermediate_path": intermediate_path})
             input_params["intermediate_path"] = intermediate_path
         
         if not os.path.exists(intermediate_path):
@@ -844,7 +1184,7 @@ class BridgeRemovalUnitProcessorTask(BaseTask):
                 if shell:
                     poly = Polygon(shell, holes)
                     bridge_centerline = mapping(compute_centerline_from_polygon(poly))
-                    _api_update_task_input_params(api_url, headers, task_id, {"bridge_centerline": bridge_centerline})
+                    _update_task_input_params(api_url, headers, task_id, {"bridge_centerline": bridge_centerline})
                     input_params["bridge_centerline"] = bridge_centerline
             except Exception as ex:
                 self._log(f"任务 {task_id} 计算中心线失败: {ex}")
@@ -891,14 +1231,14 @@ class BridgeRemovalUnitProcessorTask(BaseTask):
                     if has_valid_bbox:
                         merged_bbox = [min_x, min_y, max_x, max_y]
                         new_impact_scope = polygon_from_bbox(merged_bbox)
-                        _api_update_task_input_params(api_url, headers, task_id, {"impact_scope": new_impact_scope})
+                        _update_task_input_params(api_url, headers, task_id, {"impact_scope": new_impact_scope})
                         self._log(f"任务 {task_id} impact_scope 更新: {merged_bbox}")
 
-            _api_update_task_output_results(api_url, headers, task_id, {"preprocess_manifest": manifest})
+            _update_task_output_results(api_url, headers, task_id, {"preprocess_manifest": manifest})
             return True
         except Exception as ex:
             merge_step_result(manifest, {"step": {"name": "preprocess_pipeline", "status": "failed"}, "error": str(ex), "artifacts": {}})
-            _api_update_task_output_results(api_url, headers, task_id, {"preprocess_manifest": manifest})
+            _update_task_output_results(api_url, headers, task_id, {"preprocess_manifest": manifest})
             self._log(f"任务 {task_id} 分割失败: {ex}")
             raise ex
 

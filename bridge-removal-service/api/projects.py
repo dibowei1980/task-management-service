@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 
 import requests
-from flask import Blueprint, request
+from flask import Blueprint, current_app, request
 
 from api.auth import require_local_auth, require_auth
 from api.utils import api_ok, api_created, api_accepted, api_no_content, api_error, api_collection
@@ -27,7 +27,7 @@ from bridge_removal_task import (
     BridgeRemovalUnitProcessorTask,
 )
 
-TMS_URL = os.getenv("TASK_MANAGEMENT_API_URL", "http://localhost:8082/api")
+TMS_URL = os.getenv("TASK_MANAGEMENT_API_URL", "http://127.0.0.1:8082/api")
 TMS_TOKEN = os.getenv("TASK_MANAGEMENT_AUTH_TOKEN", "internal-automation-token")
 
 
@@ -78,35 +78,38 @@ def receive_project(project_id: str):
     }
     set_project(project_id, project)
 
+    app = current_app._get_current_object()
+
     def _run_async():
-        job_id = create_job_record(project_id, task_type, input_params)
-        update_project_fields(project_id, {"job_id": job_id, "status": "IN_PROGRESS"})
-        update_job_status(job_id, "IN_PROGRESS")
-        callback_task_status(project_id, "IN_PROGRESS")
+        with app.app_context():
+            job_id = create_job_record(project_id, task_type, input_params)
+            update_project_fields(project_id, {"job_id": job_id, "status": "IN_PROGRESS"})
+            update_job_status(job_id, "IN_PROGRESS")
+            callback_task_status(project_id, "IN_PROGRESS")
 
-        try:
-            if task_type == "BRIDGE_REMOVAL_BATCH":
-                task = BridgeRemovalOrchestratorTask(task_id=project_id, input_params=input_params)
-            else:
-                task = BridgeRemovalUnitProcessorTask(task_id=project_id, input_params=input_params)
+            try:
+                if task_type == "BRIDGE_REMOVAL_BATCH":
+                    task = BridgeRemovalOrchestratorTask(task_id=project_id, input_params=input_params)
+                else:
+                    task = BridgeRemovalUnitProcessorTask(task_id=project_id, input_params=input_params)
 
-            task.run()
-            task_status = task.get_status()
-            task_results = task.get_results()
+                task.run()
+                task_status = task.get_status()
+                task_results = task.get_results()
 
-            if task_status == "COMPLETED":
-                update_project_fields(project_id, {"status": "COMPLETED"})
-                update_job_status(job_id, "COMPLETED", results=task_results)
-                callback_task_status(project_id, "COMPLETED", results=task_results)
-            else:
+                if task_status == "COMPLETED":
+                    update_project_fields(project_id, {"status": "COMPLETED", "progress": 100})
+                    update_job_status(job_id, "COMPLETED", results=task_results)
+                    callback_task_status(project_id, "COMPLETED", results=task_results)
+                else:
+                    update_project_fields(project_id, {"status": "FAILED"})
+                    update_job_status(job_id, "FAILED", error=str(task_results.get("error", "Unknown error")))
+                    callback_task_status(project_id, "FAILED", results=task_results)
+            except Exception as e:
+                error_msg = str(e)
                 update_project_fields(project_id, {"status": "FAILED"})
-                update_job_status(job_id, "FAILED", error=str(task_results.get("error", "Unknown error")))
-                callback_task_status(project_id, "FAILED", results=task_results)
-        except Exception as e:
-            error_msg = str(e)
-            update_project_fields(project_id, {"status": "FAILED"})
-            update_job_status(job_id, "FAILED", error=error_msg)
-            callback_task_status(project_id, "FAILED")
+                update_job_status(job_id, "FAILED", error=error_msg)
+                callback_task_status(project_id, "FAILED")
 
     threading.Thread(target=_run_async, daemon=True).start()
 
@@ -121,14 +124,28 @@ def receive_project(project_id: str):
 @require_local_auth
 def list_projects():
     page = request.args.get("page", 1, type=int)
-    per_page = request.args.get("per_page", 20, type=int)
+    per_page = request.args.get("per_page") or request.args.get("size", 20)
+    try:
+        per_page = int(per_page)
+    except (ValueError, TypeError):
+        per_page = 20
+    per_page = min(per_page, 1000)
     status_filter = request.args.get("status")
+    category_filter = request.args.get("category")
+    type_filter = request.args.get("type")
+    external_system_filter = request.args.get("external_system") or request.args.get("externalSystem")
     sort = request.args.get("sort", "-created_at")
 
     projects = list(get_all_projects().values())
 
     if status_filter:
         projects = [p for p in projects if p.get("status") == status_filter]
+    if category_filter:
+        projects = [p for p in projects if p.get("category") == category_filter]
+    if type_filter:
+        projects = [p for p in projects if p.get("task_type") == type_filter]
+    if external_system_filter:
+        projects = [p for p in projects if p.get("external_system") == external_system_filter]
 
     sort_field = sort.lstrip("-")
     reverse = sort.startswith("-")
@@ -184,8 +201,9 @@ def update_project(project_id: str):
         updates["task_name"] = body["name"]
     if "task_name" in body and "name" not in body:
         updates["name"] = body["task_name"]
-    if "input_params" in body:
-        ip = body["input_params"]
+    input_params_val = body.get("input_params")
+    if input_params_val is not None:
+        ip = input_params_val
         if isinstance(ip, str):
             try:
                 ip = json.loads(ip)
@@ -196,14 +214,37 @@ def update_project(project_id: str):
     return api_ok(project_to_task_response(updated))
 
 
+def _find_subtasks_recursive(project_id: str) -> list:
+    from db.repository import ProjectRepository
+    from services.project_service import db_model_to_project_dict
+
+    results = []
+    seen = set()
+
+    def _collect(parent_id: str):
+        children = ProjectRepository.find_by_parent(parent_id)
+        for m in children:
+            if m.id in seen:
+                continue
+            seen.add(m.id)
+            p = db_model_to_project_dict(m)
+            if p.get("category") == "SUBTASK":
+                results.append(project_to_task_response(p))
+            elif p.get("category") == "SYSTEM_TASK":
+                _collect(m.id)
+
+    _collect(project_id)
+    return results
+
+
 @projects_bp.route("/<project_id>/jobs", methods=["GET"])
 @require_local_auth
 def list_project_jobs(project_id: str):
     project = get_project(project_id)
     if not project:
         return api_error("not_found", "Project not found", 404)
-    jobs = find_jobs_by_project(project_id)
-    return api_ok(jobs)
+    subtasks = _find_subtasks_recursive(project_id)
+    return api_ok(subtasks)
 
 
 @projects_bp.route("/<project_id>", methods=["DELETE"])

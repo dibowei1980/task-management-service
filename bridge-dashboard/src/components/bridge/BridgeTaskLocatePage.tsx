@@ -109,7 +109,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
   const maskOverlaySeqRef = useRef(0);
   const displayMenuRef = useRef<HTMLDivElement | null>(null);
 
-  const doms = data?.doms || [];
+  const doms = useMemo(() => data?.doms || [], [data?.doms]);
   const segmentItems = useMemo(() => segments.filter(item => item.kind !== 'segment_result' && item.kind !== 'merged_result'), [segments]);
   const segmentResultItems = useMemo(() => segments.filter(item => item.kind === 'segment_result'), [segments]);
   const mergedResultItems = useMemo(() => segments.filter(item => item.kind === 'merged_result'), [segments]);
@@ -130,11 +130,11 @@ export const BridgeTaskLocatePage: React.FC = () => {
     });
     return map;
   }, [segmentItems]);
-  const items = viewMode === 'segment'
+  const items = useMemo(() => viewMode === 'segment'
     ? segmentItems
     : (viewMode === 'segment_result'
       ? segmentResultItems
-      : (viewMode === 'merged_result' ? mergedResultItems : doms));
+      : (viewMode === 'merged_result' ? mergedResultItems : doms)), [viewMode, segmentItems, segmentResultItems, mergedResultItems, doms]);
   const selected = items[domIndex] || null;
 
   useEffect(() => {
@@ -302,7 +302,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
       setRunStatus(message);
       return;
     }
-    const maskPath = buildMaskPath(target.jsonPath, target.path);
+    const maskPath = buildMaskPath(target.jsonPath, target.path, target);
     if (maskPath) {
       try {
         await bridgeApi.get(`/api/v1/tasks/${taskId}/preprocess-file?path=${encodeURIComponent(maskPath)}`, { responseType: 'arraybuffer' });
@@ -331,8 +331,8 @@ export const BridgeTaskLocatePage: React.FC = () => {
     bridgeApi.post(`/api/v1/tasks/${taskId}/mask-generate`, {
       segment_json_path: target.jsonPath,
     }).then(res => {
-      const data = res.data as { mask_manifest?: { artifacts?: { segment_count?: number }; error?: unknown } } | null;
-      const manifest = data && typeof data === 'object' ? data.mask_manifest : null;
+      const data = res.data as { maskManifest?: { artifacts?: { segmentCount?: number }; error?: unknown; segments?: Array<Record<string, unknown>> } } | null;
+      const manifest = data && typeof data === 'object' ? data.maskManifest : null;
       const errValue = manifest && typeof manifest === 'object' && 'error' in manifest ? (manifest as { error?: unknown }).error : null;
       if (errValue) {
         const message = String(errValue);
@@ -340,11 +340,27 @@ export const BridgeTaskLocatePage: React.FC = () => {
         setRunStatus(message);
         return;
       }
-      const artifacts = manifest && typeof manifest === 'object' && 'artifacts' in manifest ? (manifest as { artifacts?: { segment_count?: number } }).artifacts : null;
-      const count = artifacts && typeof artifacts === 'object' && 'segment_count' in artifacts ? Number(artifacts.segment_count) : null;
-      const message = Number.isFinite(count) ? `掩膜生成完成（${count}）` : '掩膜生成完成';
+      const artifacts = manifest && typeof manifest === 'object' && 'artifacts' in manifest ? (manifest as { artifacts?: { segmentCount?: number; pipelineMode?: string } }).artifacts : null;
+      const count = artifacts && typeof artifacts === 'object' && 'segmentCount' in artifacts ? Number(artifacts.segmentCount) : null;
+      const pipelineMode = artifacts && typeof artifacts === 'object' && 'pipelineMode' in artifacts ? String(artifacts.pipelineMode) : '';
+      const modeLabel = pipelineMode === 'sam2' ? 'SAM2' : pipelineMode === 'polygon_sam2_unavailable' ? '多边形(SAM2不可用)' : pipelineMode === 'polygon' ? '多边形' : pipelineMode || '多边形';
+      const message = Number.isFinite(count) ? `${modeLabel}掩膜生成完成（${count}）` : `${modeLabel}掩膜生成完成`;
       setMaskGenerateSuccess(message);
       setRunStatus(message);
+      const returnedSegments = manifest && typeof manifest === 'object' && 'segments' in manifest ? (manifest as { segments?: Array<Record<string, unknown>> }).segments : [];
+      if (returnedSegments && returnedSegments.length > 0) {
+        setSegments(prev => prev.map(seg => {
+          const match = returnedSegments.find(rs => {
+            const rsJson = String(rs.jsonPath || '').replace(/\\/g, '/');
+            const segJson = String(seg.jsonPath || '').replace(/\\/g, '/');
+            return rsJson && segJson && rsJson === segJson;
+          });
+          if (match) {
+            return { ...seg, maskSamPath: match.maskSamPath as string | undefined, maskCutPath: match.maskCutPath as string | undefined, mergedMaskPath: match.mergedMaskPath as string | undefined, overlayPath: match.overlayPath as string | undefined, shadowMaskPath: match.shadowMaskPath as string | undefined };
+          }
+          return seg;
+        }));
+      }
       if (showMask) setMaskReloadKey(v => v + 1);
     }).catch(e => {
       const msg = (e && typeof e === 'object' && 'message' in e) ? String((e as { message?: unknown }).message) : '生成掩膜失败';
@@ -866,11 +882,11 @@ export const BridgeTaskLocatePage: React.FC = () => {
       segment_json_path: target.jsonPath,
       image_path: target.path,
     };
-    const maskPath = buildMaskPath(target.jsonPath, target.path);
+    const maskPath = buildMaskPath(target.jsonPath, target.path, target);
     if (maskPath) {
       payload.removal_mask_path = maskPath;
     }
-    const maskCutPath = buildMaskCutPath(target.jsonPath, target.path);
+    const maskCutPath = buildMaskCutPath(target.jsonPath, target.path, target);
     if (maskCutPath) {
       payload.crop_mask_path = maskCutPath;
     }
@@ -1084,7 +1100,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
       setMaskBitmap(null);
       return;
     }
-    const maskPath = buildMaskPath(jsonPath, selected?.path);
+    const maskPath = buildMaskPath(jsonPath, selected?.path, selected ?? undefined);
     if (!maskPath) {
       flashMaskToast('掩膜不存在');
       setMaskBitmap(null);
@@ -1125,7 +1141,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
       setMaskCutBitmap(null);
       return;
     }
-    const maskPath = buildMaskCutPath(jsonPath, selected?.path);
+    const maskPath = buildMaskCutPath(jsonPath, selected?.path, selected ?? undefined);
     if (!maskPath) {
       setMaskCutBitmap(null);
       return;

@@ -99,7 +99,7 @@ def dom_tile_info(dom_path):
     x_br = a * width + b * height + c
     y_br = d * width + e * height + f_
     bounds = [min(x_tl, x_br), min(y_tl, y_br), max(x_tl, x_br), max(y_tl, y_br)]
-    return {"bounds": bounds, "resolution": resolution}
+    return {"bounds": bounds, "resolution": resolution, "tfw": {"a": a, "b": b, "d": d, "e": e, "c": c, "f": f_}}
 
 
 class DomTileIndex:
@@ -143,7 +143,7 @@ def parse_strategy(value, default_value):
     if not value:
         return default_value
     s = str(value).strip().upper()
-    if s in ("ASC", "DESC", "OVERWRITE", "SKIP"):
+    if s in ("ASC", "DESC", "OVERWRITE", "SKIP", "AUTO"):
         return s
     if s in ("从小到大", "SMALL_TO_LARGE", "SMALL2LARGE", "S2L"):
         return "ASC"
@@ -153,6 +153,8 @@ def parse_strategy(value, default_value):
         return "OVERWRITE"
     if s in ("跳过", "跳过现有子任务"):
         return "SKIP"
+    if s in ("自动", "自动生成掩膜"):
+        return "AUTO"
     return default_value
 
 

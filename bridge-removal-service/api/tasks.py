@@ -1,12 +1,14 @@
 import json
 import logging
 import os
+import re
 import threading
 import traceback
+import urllib.parse
 import uuid
 from datetime import datetime
 
-from flask import Blueprint, request
+from flask import Blueprint, current_app, request
 
 from api.auth import require_local_auth, require_auth, require_permission
 from api.utils import api_ok, api_accepted, api_error
@@ -24,6 +26,7 @@ from bridge_removal_task import (
     BridgeRemovalUnitProcessorTask,
     run_inpaint_fill,
     run_write_back_to_dom,
+    _get_intermediate_root,
 )
 
 tasks_bp = Blueprint("tasks", __name__, url_prefix="/api/v1/tasks")
@@ -42,10 +45,170 @@ def _is_path_allowed(requested_path: str) -> bool:
     real = os.path.realpath(requested_path)
     allowed_dirs = list(_ALLOWED_ROOTS)
     allowed_dirs.append(os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "intermediate")))
+    allowed_dirs.append(os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")))
+    intermediate_root = os.getenv("INTERMEDIATE_ROOT", "")
+    if intermediate_root:
+        allowed_dirs.append(os.path.realpath(intermediate_root))
     for allowed in allowed_dirs:
         if real.startswith(allowed + os.sep) or real == allowed:
             return True
     return False
+
+
+def _resolve_intermediate_path(project: dict, input_params: dict) -> str:
+    task_id = project.get("project_id") or project.get("id") or ""
+    intermediate_path = input_params.get("intermediate_path")
+    if intermediate_path:
+        return intermediate_path
+    intermediate_root = input_params.get("intermediate_root")
+    if not intermediate_root:
+        parent_task_id = project.get("parent_task_id")
+        if parent_task_id:
+            parent_project = get_project(parent_task_id)
+            if parent_project:
+                parent_ip = parent_project.get("input_params") or {}
+                if isinstance(parent_ip, str):
+                    try:
+                        parent_ip = json.loads(parent_ip)
+                    except (json.JSONDecodeError, TypeError):
+                        parent_ip = {}
+                intermediate_root = parent_ip.get("intermediate_root")
+    default_root = intermediate_root or os.getenv("BRS_INTERMEDIATE_ROOT", "./intermediate")
+    parent_task_id = project.get("parent_task_id") or ""
+    project_dir = str(parent_task_id) if parent_task_id else ""
+    bridge_id = input_params.get("bridge_id") or ""
+    try:
+        from bridge_removal.vector_reader import sanitize_id
+        safe_bridge_id = sanitize_id(bridge_id) if sanitize_id else str(bridge_id).strip()
+    except ImportError:
+        safe_bridge_id = str(bridge_id).strip()
+    if not safe_bridge_id:
+        safe_bridge_id = str(task_id)
+    return os.path.normpath(os.path.join(str(default_root), project_dir, str(task_id), safe_bridge_id))
+
+
+def _read_segment_json(json_path: str) -> dict | None:
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _run_sam2_pipeline(segment_json_path: str, masks_dir: str, task_id: str) -> dict:
+    from bridge_removal.mask_pipeline import run_mask_generation, generate_bridge_masks_from_json
+    payload = {
+        "segment_json_path": segment_json_path,
+        "task_id": task_id,
+    }
+    payload_text = json.dumps(payload, ensure_ascii=False)
+    try:
+        result = run_mask_generation(task_id, payload_text)
+    except Exception as e:
+        logger.warning("SAM2 pipeline failed, falling back to polygon: %s", e)
+        return generate_bridge_masks_from_json(segment_json_path, masks_dir)
+    segments = []
+    has_error = False
+    if isinstance(result, dict):
+        for item in result.get("items", []):
+            if item.get("status") == "failed":
+                has_error = True
+                break
+    if has_error:
+        logger.warning("SAM2 pipeline returned errors, falling back to polygon")
+        return generate_bridge_masks_from_json(segment_json_path, masks_dir)
+    if isinstance(result, dict):
+        for item in result.get("items", []):
+            seg_entry = {
+                "json_path": item.get("segment_json_path", segment_json_path),
+                "pipeline": "sam2",
+            }
+            base_name = item.get("base_name", "")
+            output_dir = item.get("output_dir", masks_dir)
+            if base_name:
+                seg_entry["mask_sam_path"] = os.path.join(output_dir, f"{base_name}_mask_sam.png")
+                seg_entry["mask_cut_path"] = os.path.join(output_dir, f"{base_name}_mask_cut.png")
+                seg_entry["shadow_mask_path"] = os.path.join(output_dir, f"{base_name}_shadow_mask.png")
+                seg_entry["merged_mask_path"] = os.path.join(output_dir, f"{base_name}_mask_with_shadow.png")
+                seg_entry["overlay_path"] = os.path.join(output_dir, f"{base_name}_overlay.png")
+            segments.append(seg_entry)
+    if not segments:
+        segments.append({"json_path": segment_json_path, "pipeline": "sam2", "error": "no_results"})
+    return {"segments": segments, "segment_count": len(segments)}
+
+
+def _resolve_task_dir(project: dict, input_params: dict) -> str:
+    intermediate_path = input_params.get("intermediate_path")
+    if intermediate_path:
+        return os.path.normpath(intermediate_path)
+    task_id = project.get("project_id") or project.get("id") or ""
+    intermediate_root = input_params.get("intermediate_root")
+    if not intermediate_root:
+        parent_task_id = project.get("parent_task_id")
+        if parent_task_id:
+            parent_project = get_project(parent_task_id)
+            if parent_project:
+                parent_ip = parent_project.get("input_params") or {}
+                if isinstance(parent_ip, str):
+                    try:
+                        parent_ip = json.loads(parent_ip)
+                    except (json.JSONDecodeError, TypeError):
+                        parent_ip = {}
+                intermediate_root = parent_ip.get("intermediate_root")
+    default_root = intermediate_root or _get_intermediate_root()
+    parent_task_id = project.get("parent_task_id") or ""
+    bridge_id = input_params.get("bridge_id") or ""
+    safe_bridge_id = re.sub(r'[^\w\-.]', '_', str(bridge_id)) if bridge_id else "bridge"
+    project_dir = str(parent_task_id) if parent_task_id else ""
+    return os.path.normpath(os.path.join(str(default_root), project_dir, str(task_id), safe_bridge_id))
+
+
+def _world_to_pixel(world_coords, bounds, width_px, height_px):
+    if not bounds or width_px <= 0 or height_px <= 0:
+        return None
+    min_x, min_y, max_x, max_y = bounds
+    scale_x = width_px / (max_x - min_x) if (max_x - min_x) > 0 else 1
+    scale_y = height_px / (max_y - min_y) if (max_y - min_y) > 0 else 1
+    px = (world_coords[0] - min_x) * scale_x
+    py = (max_y - world_coords[1]) * scale_y
+    return [px, py]
+
+
+def _world_poly_to_pixel(geojson, bounds, width_px, height_px):
+    if not geojson or not bounds:
+        return None
+    geom_type = geojson.get("type")
+    coords = geojson.get("coordinates")
+    if not coords:
+        return None
+    if geom_type == "LineString":
+        result = []
+        for pt in coords:
+            ppx = _world_to_pixel(pt, bounds, width_px, height_px)
+            if ppx:
+                result.append(ppx)
+        return result if len(result) >= 2 else None
+    if geom_type == "Polygon":
+        shell = coords[0] if coords else []
+        result = []
+        for pt in shell:
+            ppx = _world_to_pixel(pt, bounds, width_px, height_px)
+            if ppx:
+                result.append(ppx)
+        return result if len(result) >= 3 else None
+    return None
+
+
+def _bbox_overlaps_poly(bbox_geojson, poly_geojson):
+    if not bbox_geojson or not poly_geojson:
+        return False
+    try:
+        from shapely.geometry import shape
+        a = shape(bbox_geojson)
+        b = shape(poly_geojson)
+        return a.intersects(b)
+    except Exception:
+        return False
 
 
 @tasks_bp.route("/<task_id>", methods=["GET"])
@@ -56,7 +219,23 @@ def get_task(task_id: str):
         project = find_project_by_task_id(task_id)
     if not project:
         return api_error("not_found", "Task not found", 404)
-    return api_ok(project_to_task_response(project))
+    resp = project_to_task_response(project)
+    current_user = getattr(request, 'current_user', None)
+    allowed = True
+    if current_user:
+        user_perms = current_user.get("permissions", [])
+        user_dept = current_user.get("department_id", "")
+        created_dept = project.get("created_department_id", "")
+        has_global = any(p in user_perms for p in ["project:update_global", "project:update"])
+        has_dept = any(p in user_perms for p in ["project:update_department", "project:update"])
+        if has_global:
+            allowed = True
+        elif has_dept:
+            allowed = (user_dept == created_dept)
+        else:
+            allowed = any(p in user_perms for p in ["project:update_own", "project:update"])
+    resp["allowed"] = allowed
+    return api_ok(resp)
 
 
 @tasks_bp.route("/<task_id>", methods=["PUT"])
@@ -74,23 +253,26 @@ def update_task(task_id: str):
         "created_by_name", "created_department_id", "created_department_name",
         "external_system", "external_task_id", "external_url",
     ]
+    updates = {}
     for field in updatable_fields:
         val = body.get(field)
         if val is not None:
-            project[field] = val
+            updates[field] = val
     if "name" in body and "task_name" not in body:
-        project["task_name"] = body["name"]
+        updates["task_name"] = body["name"]
     if "task_name" in body and "name" not in body:
-        project["name"] = body["task_name"]
-    if "input_params" in body:
-        ip = body["input_params"]
+        updates["name"] = body["task_name"]
+    input_params_val = body.get("input_params")
+    if input_params_val is not None:
+        ip = input_params_val
         if isinstance(ip, str):
             try:
                 ip = json.loads(ip)
             except (json.JSONDecodeError, TypeError):
                 ip = {}
-        project["input_params"] = ip
-    return api_ok(project_to_task_response(project))
+        updates["input_params"] = ip
+    updated = update_project_fields(task_id, updates)
+    return api_ok(project_to_task_response(updated))
 
 
 @tasks_bp.route("/<task_id>/workflow-status", methods=["PATCH"])
@@ -103,12 +285,14 @@ def update_workflow_status(task_id: str):
     body = get_validated_body()
     workflow_status = body.get("workflow_status")
 
-    input_params = project.get("input_params", {})
+    input_params = project.get("input_params") or {}
     if isinstance(input_params, str):
         try:
             input_params = json.loads(input_params)
         except (json.JSONDecodeError, TypeError):
             input_params = {}
+    if not isinstance(input_params, dict):
+        input_params = {}
 
     is_local_unsynced = project.get("source") == "local" and not project.get("tms_synced")
     qa_blocked_transitions = {
@@ -170,30 +354,87 @@ def dom_locate(task_id: str):
     if not project:
         return api_error("not_found", "Task not found", 404)
 
-    input_params = project.get("input_params", {})
+    input_params = project.get("input_params") or {}
     bridge_polygon = input_params.get("bridge_polygon") or input_params.get("bridge_polygon_geojson")
     bridge_centerline = input_params.get("bridge_centerline") or input_params.get("bridge_centerline_geojson")
     source_doms = input_params.get("source_doms") or []
+    bridge_geometry_missing = input_params.get("bridge_geometry_missing", False)
+    bridge_geometry_missing_reason = input_params.get("bridge_geometry_missing_reason")
+    impact_scope = input_params.get("impact_scope")
 
-    dom_tiles = []
+    parent_task_id = project.get("parent_task_id") or input_params.get("project_id")
+    dependency_count = 0
+    successor_count = 0
+    predecessor_polygons = []
+    successor_polygons = []
+    if parent_task_id:
+        from services.project_service import get_subtasks_local
+        siblings = get_subtasks_local(parent_task_id)
+        for s in siblings:
+            s_ip = s.get("inputParams") or {}
+            s_poly = s_ip.get("bridge_polygon") or s_ip.get("bridge_polygon_geojson")
+            s_impact = s_ip.get("impact_scope")
+            s_id = s.get("id")
+            if s_id == task_id:
+                continue
+            if s_poly and _bbox_overlaps_poly(impact_scope, s_poly):
+                if s.get("status") not in ("COMPLETED",):
+                    predecessor_polygons.append(s_poly)
+                    dependency_count += 1
+            if s_poly and _bbox_overlaps_poly(s_impact, bridge_polygon):
+                if s.get("status") not in ("COMPLETED",):
+                    successor_polygons.append(s_poly)
+                    successor_count += 1
+
+    doms = []
     for dom_path in source_doms:
         try:
-            from services.shp_utils import DomTileIndex, dom_tile_info
+            from services.shp_utils import dom_tile_info, get_image_size
             info = dom_tile_info(dom_path)
-            dom_tiles.append({
+            bounds = info.get("bounds")
+            tfw = info.get("tfw")
+            width_px, height_px = get_image_size(dom_path)
+            bridge_polygon_px = _world_poly_to_pixel(bridge_polygon, bounds, width_px, height_px) if bridge_polygon and bounds else None
+            impact_polygon_px = _world_poly_to_pixel(impact_scope, bounds, width_px, height_px) if impact_scope and bounds else None
+            predecessor_polygons_px = [_world_poly_to_pixel(p, bounds, width_px, height_px) for p in predecessor_polygons] if bounds else []
+            successor_polygons_px = [_world_poly_to_pixel(p, bounds, width_px, height_px) for p in successor_polygons] if bounds else []
+            centerline_px = _world_poly_to_pixel(bridge_centerline, bounds, width_px, height_px) if bridge_centerline and bounds else None
+            doms.append({
                 "path": dom_path,
-                "bounds": info.get("bounds"),
-                "resolution": info.get("resolution"),
+                "file_url": f"/api/v1/tasks/{task_id}/dom-file?path={dom_path}",
+                "width": width_px,
+                "height": height_px,
+                "tfw": tfw,
+                "bridge_polygon_px": bridge_polygon_px,
+                "centerline_px": centerline_px,
+                "impact_polygon_px": impact_polygon_px,
+                "predecessor_bridge_polygons_px": predecessor_polygons_px,
+                "successor_bridge_polygons_px": successor_polygons_px,
+                "bridge_geometry_missing": bridge_geometry_missing,
+                "bridge_geometry_missing_reason": bridge_geometry_missing_reason,
             })
         except Exception:
-            dom_tiles.append({"path": dom_path, "bounds": None, "resolution": None})
+            doms.append({
+                "path": dom_path,
+                "file_url": f"/api/v1/tasks/{task_id}/dom-file?path={dom_path}",
+                "width": 0,
+                "height": 0,
+                "tfw": None,
+                "bridge_polygon_px": None,
+                "centerline_px": None,
+                "impact_polygon_px": None,
+                "predecessor_bridge_polygons_px": [],
+                "successor_bridge_polygons_px": [],
+                "bridge_geometry_missing": bridge_geometry_missing,
+                "bridge_geometry_missing_reason": bridge_geometry_missing_reason,
+            })
 
     return api_ok({
         "task_id": task_id,
-        "bridge_polygon": bridge_polygon,
-        "bridge_centerline": bridge_centerline,
-        "source_doms": source_doms,
-        "dom_tiles": dom_tiles,
+        "dom_count": len(doms),
+        "dependency_count": dependency_count,
+        "successor_count": successor_count,
+        "doms": doms,
     })
 
 
@@ -205,7 +446,7 @@ def dom_file(task_id: str):
     if not project:
         return api_error("not_found", "Task not found", 404)
 
-    input_params = project.get("input_params", {})
+    input_params = project.get("input_params") or {}
     dom_path = request.args.get("path")
     if not dom_path:
         source_doms = input_params.get("source_doms") or []
@@ -228,18 +469,170 @@ def preprocess_segments(task_id: str):
     if not project:
         return api_error("not_found", "Task not found", 404)
 
-    input_params = project.get("input_params", {})
-    intermediate_path = input_params.get("intermediate_path") or f"./intermediate/{task_id}"
-    segments_dir = os.path.join(intermediate_path, "segments")
+    input_params = project.get("input_params") or {}
+    task_dir = _resolve_task_dir(project, input_params)
+    segments_dir = os.path.join(task_dir, "segments")
+
+    output_results = project.get("output_results") or {}
+    manifest = output_results.get("preprocess_manifest") if isinstance(output_results, dict) else None
+    manifest_present = isinstance(manifest, dict)
+    manifest_source = "output_results" if manifest_present else None
+    manifest_error = None
+    manifest_steps = None
+    if manifest_present:
+        manifest_error = manifest.get("error")
+        manifest_steps = manifest.get("steps")
 
     segments = []
     if os.path.exists(segments_dir):
-        for name in sorted(os.listdir(segments_dir)):
-            seg_path = os.path.join(segments_dir, name)
-            if os.path.isdir(seg_path):
-                segments.append({"name": name, "path": seg_path})
+        json_files = sorted(f for f in os.listdir(segments_dir) if f.endswith(".json"))
+        for jf in json_files:
+            json_path = os.path.join(segments_dir, jf)
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    seg_data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                continue
 
-    return api_ok({"task_id": task_id, "segments": segments, "intermediate_path": intermediate_path})
+            img_info = seg_data.get("image_info") or {}
+            geometry = seg_data.get("geometry") or {}
+            props = seg_data.get("properties") or {}
+
+            img_filename = img_info.get("filename") or jf.replace(".json", ".png")
+            img_path = os.path.join(segments_dir, img_filename)
+            if not os.path.exists(img_path):
+                for ext in (".png", ".tif", ".tiff"):
+                    candidate = os.path.join(segments_dir, jf.replace(".json", ext))
+                    if os.path.exists(candidate):
+                        img_path = candidate
+                        break
+
+            pgw_path = os.path.join(segments_dir, jf.replace(".json", ".pgw"))
+            tfw = None
+            if os.path.exists(pgw_path):
+                try:
+                    with open(pgw_path, "r", encoding="utf-8") as f:
+                        lines = f.read().strip().splitlines()
+                    if len(lines) >= 6:
+                        tfw = {
+                            "a": float(lines[0].strip()),
+                            "b": float(lines[1].strip()),
+                            "c": float(lines[4].strip()),
+                            "d": float(lines[2].strip()),
+                            "e": float(lines[3].strip()),
+                            "f": float(lines[5].strip()),
+                        }
+                except (ValueError, OSError):
+                    pass
+
+            file_url = f"/api/v1/tasks/{task_id}/preprocess-file?path={urllib.parse.quote(img_path, safe='')}"
+            json_url = f"/api/v1/tasks/{task_id}/preprocess-file?path={urllib.parse.quote(json_path, safe='')}"
+
+            bridge_polygon_geo = geometry.get("polygon")
+            centerline_geo = geometry.get("centerline")
+            center_point_geo = geometry.get("center_point")
+            bounds_geo = geometry.get("bounds_geo")
+
+            bridge_polygon_px = None
+            centerline_px = None
+            center_point_px = None
+
+            if tfw:
+                a_val = tfw.get("a", 0)
+                b_val = tfw.get("b", 0)
+                c_val = tfw.get("c", 0)
+                d_val = tfw.get("d", 0)
+                e_val = tfw.get("e", 0)
+                f_val = tfw.get("f", 0)
+                det = a_val * e_val - b_val * d_val
+
+                def _world_to_px(wx, wy):
+                    if not det or abs(det) < 1e-12:
+                        return None
+                    dx = wx - c_val
+                    dy = wy - f_val
+                    col = (e_val * dx - b_val * dy) / det
+                    row = (-d_val * dx + a_val * dy) / det
+                    return [col, row]
+
+                def _geojson_coords_to_px(geojson):
+                    if not geojson or not isinstance(geojson, dict):
+                        return None
+                    geo_type = geojson.get("type")
+                    coords = geojson.get("coordinates")
+                    if not coords:
+                        return None
+                    if geo_type == "Polygon":
+                        result = []
+                        for ring in coords:
+                            px_ring = []
+                            for pt in ring:
+                                px = _world_to_px(pt[0], pt[1])
+                                if px:
+                                    px_ring.append(px)
+                            if px_ring:
+                                result.append(px_ring)
+                        return result[0] if len(result) == 1 else result
+                    elif geo_type == "LineString":
+                        result = []
+                        for pt in coords:
+                            px = _world_to_px(pt[0], pt[1])
+                            if px:
+                                result.append(px)
+                        return result
+                    elif geo_type == "Point":
+                        px = _world_to_px(coords[0], coords[1])
+                        return px
+                    return None
+
+                bridge_polygon_px = _geojson_coords_to_px(bridge_polygon_geo)
+                centerline_px = _geojson_coords_to_px(centerline_geo)
+                center_point_px = _geojson_coords_to_px(center_point_geo)
+
+            seg_item = {
+                "path": img_path,
+                "imagePath": img_path,
+                "jsonPath": json_path,
+                "fileUrl": file_url,
+                "jsonUrl": json_url,
+                "width": img_info.get("width", 256),
+                "height": img_info.get("height", 256),
+                "tfw": tfw,
+                "bridgePolygonPx": bridge_polygon_px,
+                "centerlinePx": centerline_px,
+                "centerPointPx": center_point_px,
+                "boundsGeo": bounds_geo,
+                "bridgeGeometryMissing": props.get("bridge_geometry_missing", False),
+                "bridgeGeometryMissingReason": props.get("bridge_geometry_missing_reason"),
+                "bridgeId": props.get("bridge_id", ""),
+                "segmentId": props.get("segment_id", 1),
+                "kind": "segment",
+            }
+
+            mask_filename = jf.replace(".json", "_mask.png")
+            mask_path = os.path.join(segments_dir, mask_filename)
+            if not os.path.exists(mask_path):
+                mask_filename = img_filename.replace(".png", "_mask.png").replace(".tif", "_mask.png").replace(".tiff", "_mask.png")
+                mask_path = os.path.join(segments_dir, mask_filename)
+            if os.path.exists(mask_path):
+                seg_item["resultPath"] = mask_path
+                seg_item["resultFileUrl"] = f"/api/v1/tasks/{task_id}/preprocess-file?path={urllib.parse.quote(mask_path, safe='')}"
+
+            segments.append(seg_item)
+
+    all_segment_results_ready = all(s.get("resultFileUrl") for s in segments) if segments else False
+
+    return api_ok({
+        "task_id": task_id,
+        "segments": segments,
+        "intermediate_path": task_dir,
+        "manifest_present": manifest_present,
+        "manifest_source": manifest_source,
+        "manifest_error": manifest_error,
+        "manifest_steps": manifest_steps,
+        "segment_count": len(segments),
+        "all_segment_results_ready": all_segment_results_ready,
+    })
 
 
 @tasks_bp.route("/<task_id>/preprocess-file", methods=["GET"])
@@ -267,9 +660,20 @@ def preprocess_file(task_id: str):
 @validate_body(PreprocessGenerateBody)
 def api_preprocess_generate(task_id: str):
     body = get_validated_body()
-    input_params = body.get("input_params", {})
+    input_params = body.get("input_params") or {}
     overwrite = body.get("overwrite", False)
     max_side_px = body.get("max_side_px", 1024)
+
+    if not input_params:
+        existing = get_project(task_id)
+        if existing:
+            db_params = existing.get("input_params") or {}
+            if isinstance(db_params, str):
+                try:
+                    db_params = json.loads(db_params)
+                except (json.JSONDecodeError, TypeError):
+                    db_params = {}
+            input_params = db_params
 
     job_id = create_job_record(task_id, "PREPROCESS_GENERATE", input_params)
 
@@ -315,27 +719,42 @@ def execute_task(task_id: str):
     job_id = create_job_record(task_id, task_type, input_params)
     update_project_fields(task_id, {"job_id": job_id, "status": "IN_PROGRESS"})
 
+    app = current_app._get_current_object()
+
     def _run():
-        try:
-            update_job_status(job_id, "IN_PROGRESS")
-            if task_type == "BRIDGE_REMOVAL_BATCH":
-                task = BridgeRemovalOrchestratorTask(task_id=task_id, input_params=input_params)
-            else:
-                task = BridgeRemovalUnitProcessorTask(task_id=task_id, input_params=input_params)
-            task.run()
-            results = {
-                "task_id": task_id,
-                "status": task.get_status(),
-                "results": task.get_results(),
-            }
-            task_status = task.get_status()
-            update_job_status(job_id, task_status, results=results)
-            update_project_fields(task_id, {"status": task_status, "progress": 100 if task_status == "COMPLETED" else 0})
-        except Exception as e:
-            error_msg = str(e)
-            traceback_str = traceback.format_exc()
-            update_job_status(job_id, "FAILED", error=f"{error_msg}\n{traceback_str}")
-            update_project_fields(task_id, {"status": "FAILED"})
+        with app.app_context():
+            try:
+                update_job_status(job_id, "IN_PROGRESS")
+                if task_type == "BRIDGE_REMOVAL_BATCH":
+                    task = BridgeRemovalOrchestratorTask(task_id=task_id, input_params=input_params)
+                else:
+                    task = BridgeRemovalUnitProcessorTask(task_id=task_id, input_params=input_params)
+                task.run()
+                results = {
+                    "task_id": task_id,
+                    "status": task.get_status(),
+                    "results": task.get_results(),
+                }
+                task_status = task.get_status()
+                update_job_status(job_id, task_status, results=results)
+                if task_status == "COMPLETED":
+                    update_project_fields(task_id, {"status": task_status, "progress": 100})
+                else:
+                    update_project_fields(task_id, {"status": task_status})
+
+                parent_task_id = existing.get("parent_task_id")
+                if parent_task_id and task_type == "BRIDGE_REMOVAL_BATCH":
+                    parent_project = get_project(parent_task_id)
+                    if parent_project and parent_project.get("category") == "PROJECT":
+                        if task_status == "COMPLETED":
+                            update_project_fields(parent_task_id, {"status": "IN_PROGRESS", "progress": 0})
+                        elif task_status == "FAILED":
+                            update_project_fields(parent_task_id, {"status": "FAILED"})
+            except Exception as e:
+                error_msg = str(e)
+                traceback_str = traceback.format_exc()
+                update_job_status(job_id, "FAILED", error=f"{error_msg}\n{traceback_str}")
+                update_project_fields(task_id, {"status": "FAILED"})
 
     threading.Thread(target=_run, daemon=True).start()
     return api_accepted({"job_id": job_id, "status": "STARTED"})
@@ -349,29 +768,114 @@ def mask_generate(task_id: str):
     body = get_validated_body()
     input_params = body.get("input_params", {})
     segment_name = body.get("segment_name", "")
+    segment_json_path = body.get("segment_json_path", "")
+    batch = body.get("batch") or []
 
     project = find_project_by_task_id(task_id)
     if not project:
         return api_error("not_found", "Task not found", 404)
 
-    job_id = create_job_record(task_id, "MASK_GENERATE", input_params)
+    try:
+        db_input_params = project.get("input_params") or {}
+        if isinstance(db_input_params, str):
+            try:
+                db_input_params = json.loads(db_input_params)
+            except (json.JSONDecodeError, TypeError):
+                db_input_params = {}
+        merged_params = {**db_input_params, **input_params}
+        task_dir = _resolve_task_dir(project, merged_params)
+        masks_dir = os.path.join(task_dir, "masks")
+        if not os.path.isdir(masks_dir):
+            os.makedirs(masks_dir, exist_ok=True)
 
-    def _run():
-        try:
-            update_job_status(job_id, "IN_PROGRESS")
-            intermediate_path = input_params.get("intermediate_path") or f"./intermediate/{task_id}"
-            from bridge_removal.mask_pipeline import run_mask_pipeline
-            result = run_mask_pipeline(
-                intermediate_path=intermediate_path,
-                segment_name=segment_name,
-                input_params=input_params,
-            )
-            update_job_status(job_id, "COMPLETED", results=result)
-        except Exception as e:
-            update_job_status(job_id, "FAILED", error=str(e))
+        from bridge_removal.mask_pipeline import generate_bridge_masks_from_json, generate_bridge_masks, is_big_bridge, _sam2_available
 
-    threading.Thread(target=_run, daemon=True).start()
-    return api_accepted({"job_id": job_id, "status": "STARTED"})
+        sam2_ok = _sam2_available()
+        if not sam2_ok:
+            logger.info("SAM2 not available, all segments will use polygon pipeline")
+
+        all_segments = []
+        errors = []
+
+        if batch:
+            for item in batch:
+                item_path = item.get("segment_json_path", "")
+                if not item_path or not os.path.isfile(item_path):
+                    errors.append({"segment_json_path": item_path, "error": "file_not_found"})
+                    continue
+                seg_data = _read_segment_json(item_path)
+                big = is_big_bridge(seg_data) if seg_data else False
+                use_sam2 = sam2_ok and big
+                if use_sam2:
+                    result = _run_sam2_pipeline(item_path, masks_dir, task_id)
+                else:
+                    result = generate_bridge_masks_from_json(item_path, masks_dir)
+                    for seg in result.get("segments", []):
+                        if big and not sam2_ok:
+                            seg["pipeline"] = "polygon_sam2_unavailable"
+                        else:
+                            seg["pipeline"] = "polygon"
+                if result.get("error"):
+                    errors.append({"segment_json_path": item_path, "error": result["error"]})
+                else:
+                    valid_segs = []
+                    for seg in result.get("segments", []):
+                        missing = []
+                        for key in ("mask_sam_path", "mask_cut_path", "merged_mask_path", "overlay_path"):
+                            p = seg.get(key, "")
+                            if p and not os.path.isfile(p):
+                                missing.append(key)
+                        if missing:
+                            seg["write_errors"] = missing
+                        valid_segs.append(seg)
+                    all_segments.extend(valid_segs)
+        elif segment_json_path and os.path.isfile(segment_json_path):
+            seg_data = _read_segment_json(segment_json_path)
+            big = is_big_bridge(seg_data) if seg_data else False
+            use_sam2 = sam2_ok and big
+            if use_sam2:
+                result = _run_sam2_pipeline(segment_json_path, masks_dir, task_id)
+            else:
+                result = generate_bridge_masks_from_json(segment_json_path, masks_dir)
+                for seg in result.get("segments", []):
+                    if big and not sam2_ok:
+                        seg["pipeline"] = "polygon_sam2_unavailable"
+                    else:
+                        seg["pipeline"] = "polygon"
+            if result.get("error"):
+                return api_ok({"mask_manifest": {"error": result["error"]}})
+            all_segments = result.get("segments", [])
+        else:
+            segments_dir = os.path.join(task_dir, "segments")
+            if os.path.isdir(segments_dir):
+                result = generate_bridge_masks(segments_dir, masks_dir)
+                if result.get("error"):
+                    return api_ok({"mask_manifest": {"error": result["error"]}})
+                all_segments = result.get("segments", [])
+            else:
+                return api_error("segments_not_found", "No segments directory or segment_json_path provided", 400)
+
+        pipeline_modes = []
+        for seg in all_segments:
+            p = seg.get("pipeline", "")
+            if p and p not in pipeline_modes:
+                pipeline_modes.append(p)
+        pipeline_label = "/".join(pipeline_modes) if pipeline_modes else "polygon"
+
+        manifest = {
+            "artifacts": {
+                "segment_count": len(all_segments),
+                "pipeline_mode": pipeline_label,
+            },
+            "segments": all_segments,
+        }
+        if errors:
+            manifest["errors"] = errors
+
+        return api_ok({"mask_manifest": manifest})
+    except Exception as e:
+        logger.exception("mask_generate failed: %s", e)
+        return api_error("mask_generate_failed", str(e), 500)
 
 
 @tasks_bp.route("/<task_id>/mask-save", methods=["POST"])
@@ -387,8 +891,8 @@ def mask_save(task_id: str):
     if not project:
         return api_error("not_found", "Task not found", 404)
 
-    input_params = project.get("input_params", {})
-    intermediate_path = input_params.get("intermediate_path") or f"./intermediate/{task_id}"
+    input_params = project.get("input_params") or {}
+    intermediate_path = _resolve_intermediate_path(project, input_params)
     mask_dir = os.path.join(intermediate_path, "masks")
     os.makedirs(mask_dir, exist_ok=True)
 
@@ -480,8 +984,8 @@ def inpaint_result(task_id: str):
     if not project:
         return api_error("not_found", "Task not found", 404)
 
-    input_params = project.get("input_params", {})
-    intermediate_path = input_params.get("intermediate_path") or f"./intermediate/{task_id}"
+    input_params = project.get("input_params") or {}
+    intermediate_path = _resolve_intermediate_path(project, input_params)
     inpainted_path = os.path.join(intermediate_path, "inpainted_patch.tif")
 
     if not os.path.exists(inpainted_path):
@@ -503,8 +1007,8 @@ def inpaint_file(task_id: str):
     if not project:
         return api_error("not_found", "Task not found", 404)
 
-    input_params = project.get("input_params", {})
-    intermediate_path = input_params.get("intermediate_path") or f"./intermediate/{task_id}"
+    input_params = project.get("input_params") or {}
+    intermediate_path = _resolve_intermediate_path(project, input_params)
     inpainted_path = os.path.join(intermediate_path, "inpainted_patch.tif")
 
     if not os.path.exists(inpainted_path):
@@ -530,7 +1034,7 @@ def merge_results(task_id: str):
     def _run():
         try:
             update_job_status(job_id, "IN_PROGRESS")
-            result = run_write_back_to_dom(task_id, input_params or project.get("input_params", {}))
+            result = run_write_back_to_dom(task_id, input_params or project.get("input_params") or {})
             update_job_status(job_id, "COMPLETED", results=result)
             update_project_fields(project["project_id"], {"status": "COMPLETED"})
             callback_task_status(task_id, "COMPLETED", results=result)

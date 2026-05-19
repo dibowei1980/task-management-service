@@ -1,7 +1,12 @@
 import { bridgeApi } from '../utils/api';
-import type { ProjectListParams, ProjectCreatePayload, ProjectUpdatePayload, TaskUpdatePayload, MaskGeneratePayload, MaskSavePayload, MergeResultsPayload, SsoAuthResponse } from '../types/api';
+import type { ProjectListParams, ProjectCreatePayload, ProjectUpdatePayload, TaskUpdatePayload, MaskGeneratePayload, MaskSavePayload, MergeResultsPayload } from '../types/api';
 
 export const bridgeAuthService = {
+  upmLogin: async (credentials: { username: string; password: string }) => {
+    const response = await bridgeApi.post('/api/v1/auth/upm/login', credentials);
+    return response.data;
+  },
+
   logout: async () => {
     try {
       await bridgeApi.post('/api/v1/auth/logout');
@@ -16,18 +21,41 @@ export const bridgeAuthService = {
 };
 
 export const bridgeSsoService = {
-  getAuthUrl: async (redirectUri?: string): Promise<SsoAuthResponse> => {
-    const params = redirectUri ? { redirect_uri: redirectUri } : {};
-    const response = await bridgeApi.get('/api/v1/auth/sso/auth-url', { params });
-    const data = response.data as { auth_url: string; state: string };
-    return { authUrl: data.auth_url, state: data.state };
+  redirectToSsoLogin: async () => {
+    const redirectUri = `${window.location.origin}/sso/callback`;
+    try {
+      const response = await bridgeApi.get('/api/v1/auth/sso/auth-url', {
+        params: { redirect_uri: redirectUri },
+        timeout: 10000,
+      });
+      const data = response.data as { authUrl: string; state: string };
+      sessionStorage.setItem('sso_state', data.state);
+      window.location.href = data.authUrl;
+    } catch (error: unknown) {
+      console.error('Failed to get SSO auth URL:', error);
+      const msg = error instanceof Error ? error.message : '';
+      if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('Network request failed') || msg.includes('timeout')) {
+        window.location.href = `/?error=backend_unavailable`;
+      } else {
+        window.location.href = `/?error=sso`;
+      }
+    }
   },
 
-  redirectToSsoLogin: async () => {
-    const redirectUri = `${window.location.origin}/api/v1/auth/sso/callback`;
-    const data = await bridgeSsoService.getAuthUrl(redirectUri);
-    sessionStorage.setItem('sso_state', data.state);
-    window.location.href = data.authUrl;
+  exchangeCode: async (code: string) => {
+    const response = await bridgeApi.post('/api/v1/auth/sso/token', { code }, { timeout: 20000 });
+    return response.data;
+  },
+
+  validateState: (state: string, clear: boolean = true): boolean => {
+    const savedState = sessionStorage.getItem('sso_state');
+    if (savedState && savedState === state) {
+      if (clear) {
+        sessionStorage.removeItem('sso_state');
+      }
+      return true;
+    }
+    return false;
   },
 };
 
@@ -195,6 +223,18 @@ export const bridgeSystemService = {
     } catch {
       return { taskManagementConnected: false, tmsRegistered: false, localMode: true, ssoConnected: false, upmConnected: false };
     }
+  },
+
+  browse: async (path?: string, filter?: string) => {
+    const params: Record<string, string> = {};
+    if (path) params.path = path;
+    if (filter) params.filter = filter;
+    const response = await bridgeApi.get('/api/v1/system/browse', { params });
+    return response.data as {
+      currentPath: string;
+      parentPath: string | null;
+      items: Array<{ name: string; path: string; type: 'directory' | 'file' }>;
+    };
   },
 };
 

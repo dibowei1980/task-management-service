@@ -45,7 +45,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
   const canQualityCheck = roles.includes('quality:check') || roles.includes('task:update_global');
   const userId = user?.userId;
   const userName = user?.username;
-  const hasBroadProjectRead = roles.includes('project:read') || roles.includes('project:create');
+  const hasBroadProjectRead = roles.includes('project:read_global') || roles.includes('project:read_department') || roles.includes('project:read_own') || roles.includes('project:read') || roles.includes('project:create');
 
   const userNameById = useMemo(() => {
     const map: Record<string, string> = {};
@@ -1018,7 +1018,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
               {infoTask.outputResults && (
                 <div>
                   <span className="text-gray-500">输出结果：</span>
-                  <pre className="bg-gray-50 p-3 rounded text-xs overflow-auto max-h-64 mt-1">{infoTask.outputResults}</pre>
+                  <pre className="bg-gray-50 p-3 rounded text-xs overflow-auto max-h-64 mt-1">{typeof infoTask.outputResults === 'string' ? JSON.stringify(parseJson(infoTask.outputResults), null, 2) : JSON.stringify(infoTask.outputResults, null, 2)}</pre>
                 </div>
               )}
             </div>

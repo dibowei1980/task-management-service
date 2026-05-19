@@ -122,3 +122,10 @@ start5050.ps1
 start5174.ps1
 stop5050.ps1
 stop5174.ps1
+bridge-removal-service/intermediate/
+bridge-removal-service/lib/
+bridge-removal-service/Lib/
+bridge-removal-service/Scripts/
+bridge-removal-service/include/
+bridge-removal-service/__pycache__/
+bridge-removal-service/data

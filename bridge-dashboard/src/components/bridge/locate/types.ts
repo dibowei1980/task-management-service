@@ -29,6 +29,11 @@ export type LocateItem = {
   resultReadable?: boolean;
   inpaintJobId?: string;
   kind?: 'segment' | 'segment_result' | 'merged_result';
+  maskSamPath?: string;
+  maskCutPath?: string;
+  mergedMaskPath?: string;
+  overlayPath?: string;
+  shadowMaskPath?: string;
 };
 
 export type DomLocateResponse = {

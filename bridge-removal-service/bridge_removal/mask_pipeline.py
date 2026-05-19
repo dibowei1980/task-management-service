@@ -5,9 +5,96 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
-import tkinter as tk
-from tkinter import messagebox
 from bridge_removal.extract_masks_pipeline import ExtractMasksPipeline
+
+
+import logging
+
+logger = logging.getLogger(__name__)
+
+BIG_BRIDGE_WIDTH_M = 15.0
+BIG_BRIDGE_LENGTH_M = 100.0
+BIG_BRIDGE_WIDTH_PX = 30
+BIG_BRIDGE_LENGTH_PX = 200
+
+
+def is_big_bridge(segment_data: Dict[str, Any]) -> bool:
+    props = segment_data.get("properties") if isinstance(segment_data, dict) else {}
+    if not isinstance(props, dict):
+        props = {}
+    geo = segment_data.get("geometry") if isinstance(segment_data, dict) else {}
+    if not isinstance(geo, dict):
+        geo = {}
+
+    bridge_width = props.get("bridge_width")
+    bridge_length = props.get("length")
+    resolution = props.get("resolution")
+
+    if bridge_width is not None and bridge_length is not None:
+        try:
+            w = float(bridge_width)
+            l = float(bridge_length)
+            if w >= BIG_BRIDGE_WIDTH_M or l >= BIG_BRIDGE_LENGTH_M:
+                return True
+        except (ValueError, TypeError):
+            pass
+
+    if resolution is not None and bridge_width is not None and bridge_length is not None:
+        try:
+            res = float(resolution)
+            if res > 0:
+                wpx = float(bridge_width) / res
+                lpx = float(bridge_length) / res
+                if wpx >= BIG_BRIDGE_WIDTH_PX or lpx >= BIG_BRIDGE_LENGTH_PX:
+                    return True
+        except (ValueError, TypeError):
+            pass
+
+    return False
+
+
+def _sam2_available() -> bool:
+    try:
+        import sam2  # noqa: F401
+        return True
+    except ImportError:
+        pass
+    try:
+        from segment_anything import sam_model_registry  # noqa: F401
+        return True
+    except ImportError:
+        pass
+    return False
+
+
+def _safe_imwrite(path: str, img: np.ndarray) -> bool:
+    try:
+        success = cv2.imwrite(path, img)
+    except Exception as e:
+        logger.warning("cv2.imwrite exception for %s: %s", path, e)
+        success = False
+    if not success or not os.path.isfile(path):
+        logger.warning("cv2.imwrite failed for %s (success=%s, exists=%s), trying PIL fallback", path, success, os.path.isfile(path))
+        try:
+            from PIL import Image
+            if img.ndim == 2:
+                pil_img = Image.fromarray(img)
+            elif img.shape[2] == 4:
+                pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGRA2RGBA))
+            elif img.shape[2] == 3:
+                pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+            else:
+                logger.warning("Unsupported image shape for PIL fallback: %s", img.shape)
+                return False
+            pil_img.save(path)
+            exists = os.path.isfile(path)
+            if not exists:
+                logger.warning("PIL.save also failed for %s", path)
+            return exists
+        except Exception as e:
+            logger.warning("PIL fallback also failed for %s: %s", path, e)
+            return False
+    return True
 
 
 def _ensure_dir(path: str) -> str:
@@ -202,11 +289,11 @@ def generate_bridge_masks(segments_dir: str, output_dir: str) -> Dict[str, Any]:
         shadow_path = os.path.join(output_dir, f"{base}_shadow_mask.png")
         merged_path = os.path.join(output_dir, f"{base}_mask_merged.png")
         overlay_path = os.path.join(output_dir, f"{base}_mask_overlay.png")
-        cv2.imwrite(mask_sam_path, mask_sam)
-        cv2.imwrite(mask_cut_path, mask_cut)
-        cv2.imwrite(shadow_path, shadow_mask)
-        cv2.imwrite(merged_path, merged)
-        cv2.imwrite(overlay_path, overlay)
+        _safe_imwrite(mask_sam_path, mask_sam)
+        _safe_imwrite(mask_cut_path, mask_cut)
+        _safe_imwrite(shadow_path, shadow_mask)
+        _safe_imwrite(merged_path, merged)
+        _safe_imwrite(overlay_path, overlay)
         segment_id = None
         if isinstance(props, dict):
             segment_id = props.get("segment_id")
@@ -285,11 +372,11 @@ def generate_bridge_masks_from_json(json_path: str, output_dir: str) -> Dict[str
     shadow_path = os.path.join(output_dir, f"{base}_shadow_mask.png")
     merged_path = os.path.join(output_dir, f"{base}_mask_merged.png")
     overlay_path = os.path.join(output_dir, f"{base}_mask_overlay.png")
-    cv2.imwrite(mask_sam_path, mask_sam)
-    cv2.imwrite(mask_cut_path, mask_cut)
-    cv2.imwrite(shadow_path, shadow_mask)
-    cv2.imwrite(merged_path, merged)
-    cv2.imwrite(overlay_path, overlay)
+    _safe_imwrite(mask_sam_path, mask_sam)
+    _safe_imwrite(mask_cut_path, mask_cut)
+    _safe_imwrite(shadow_path, shadow_mask)
+    _safe_imwrite(merged_path, merged)
+    _safe_imwrite(overlay_path, overlay)
     segment_id = None
     if isinstance(props, dict):
         segment_id = props.get("segment_id")

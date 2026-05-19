@@ -6,7 +6,7 @@ import { authStorage } from '../utils/storage';
 interface AuthContextType {
   user: BridgeUser | null;
   token: string | null;
-  login: (token: string, user: BridgeUser) => void;
+  login: (token: string, user: BridgeUser, authMethod?: string) => void;
   logout: () => void;
   isAuthenticated: boolean;
   isLoading: boolean;
@@ -41,18 +41,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     initAuth();
   }, []);
 
-  const login = (newToken: string, newUser: BridgeUser) => {
+  const login = (newToken: string, newUser: BridgeUser, authMethod?: string) => {
     authStorage.setToken(newToken);
     authStorage.setUser(newUser);
+    if (authMethod) {
+      authStorage.setAuthMethod(authMethod);
+    }
     setToken(newToken);
     setUser(newUser);
   };
 
   const logout = () => {
+    const authMethod = authStorage.getAuthMethod();
+
     bridgeAuthService.logout().catch(() => {});
     authStorage.clear();
     setToken(null);
     setUser(null);
+
+    if (authMethod === 'sso') {
+      const ssoBaseUrl = import.meta.env.VITE_SSO_BASE_URL || 'http://localhost:8080';
+      const clientId = import.meta.env.VITE_SSO_CLIENT_ID || 'bridge-removal-service';
+      const loginUrl = `${window.location.origin}`;
+      const params = new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: loginUrl,
+        post_logout_redirect_uri: loginUrl,
+      });
+      window.location.href = `${ssoBaseUrl}/sso/logout?${params.toString()}`;
+      return;
+    }
+
+    window.location.href = '/';
   };
 
   return (

@@ -1,4 +1,14 @@
-export const buildMaskPath = (jsonPath: string, segmentName?: string) => {
+type MaskPathItem = {
+  mergedMaskPath?: string;
+  overlayPath?: string;
+  maskCutPath?: string;
+  maskSamPath?: string;
+  shadowMaskPath?: string;
+};
+
+export const buildMaskPath = (jsonPath: string, segmentName?: string, maskItem?: MaskPathItem | null) => {
+  if (maskItem?.mergedMaskPath) return maskItem.mergedMaskPath.replace(/\\/g, '/');
+  if (maskItem?.overlayPath) return maskItem.overlayPath.replace(/\\/g, '/');
   const normalized = (jsonPath || '').replace(/\\/g, '/');
   if (!normalized) return '';
   const idx = normalized.lastIndexOf('/');
@@ -11,7 +21,8 @@ export const buildMaskPath = (jsonPath: string, segmentName?: string) => {
   return `${maskDir}/${name}/${name}_mask_with_shadow.png`;
 };
 
-export const buildMaskCutPath = (jsonPath: string, segmentName?: string) => {
+export const buildMaskCutPath = (jsonPath: string, segmentName?: string, maskItem?: MaskPathItem | null) => {
+  if (maskItem?.maskCutPath) return maskItem.maskCutPath.replace(/\\/g, '/');
   const normalized = (jsonPath || '').replace(/\\/g, '/');
   if (!normalized) return '';
   const idx = normalized.lastIndexOf('/');

@@ -3,6 +3,7 @@ export const BRIDGE_PROJECT_TYPES = new Set(['BRIDGE_REMOVAL_BATCH', 'BRIDGE_REM
 
 export type DecomposeOrderStrategy = 'ASC' | 'DESC';
 export type DecomposeOverwriteStrategy = 'OVERWRITE' | 'SKIP';
+export type DecomposeMaskGenerateStrategy = 'AUTO' | 'SKIP';
 
 export type FeedbackItem = { stage?: string; result?: string; message?: string; at?: string; by?: string };
 

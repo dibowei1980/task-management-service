@@ -2,6 +2,9 @@ import json
 import os
 import secrets
 
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"), override=True)
+
 from flask import Flask, request
 
 from db import db
@@ -32,7 +35,7 @@ def create_app():
     @app.after_request
     def _add_cors_headers(response):
         origin = request.headers.get("Origin", "")
-        allowed_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:5174")
+        allowed_origins = os.getenv("CORS_ORIGINS", "http://127.0.0.1:5173,http://127.0.0.1:5174,http://localhost:5173,http://localhost:5174")
         if origin and origin in allowed_origins.split(","):
             response.headers["Access-Control-Allow-Origin"] = origin
             response.headers["Access-Control-Allow-Credentials"] = "true"
@@ -74,4 +77,4 @@ if __name__ == "__main__":
         from services.callback_service import register_with_task_management, start_tms_retry_thread
         register_with_task_management()
         start_tms_retry_thread()
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, threaded=True)

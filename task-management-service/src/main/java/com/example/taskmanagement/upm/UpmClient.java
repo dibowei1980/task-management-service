@@ -243,21 +243,31 @@ public class UpmClient {
     @SuppressWarnings("unchecked")
     public Set<String> getOauthClientIds() {
         try {
-            String token = getServiceToken();
             HttpHeaders headers = new HttpHeaders();
-            headers.setBearerAuth(token);
+            if (internalApiKey != null && !internalApiKey.isBlank()) {
+                headers.set("X-Internal-Api-Key", internalApiKey);
+            } else {
+                String token = getServiceToken();
+                headers.setBearerAuth(token);
+            }
             HttpEntity<Void> entity = new HttpEntity<>(headers);
 
-            ResponseEntity<List> response = restTemplate.exchange(
-                    upmBaseUrl + "/api/oauth-clients",
+            String url = (internalApiKey != null && !internalApiKey.isBlank())
+                    ? upmBaseUrl + "/api/oauth-clients/internal/list"
+                    : upmBaseUrl + "/api/oauth-clients";
+
+            ResponseEntity<Map> response = restTemplate.exchange(
+                    url,
                     HttpMethod.GET,
                     entity,
-                    List.class
+                    Map.class
             );
 
             if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
                 Set<String> clientIds = new HashSet<>();
-                for (Object item : response.getBody()) {
+                Object clientsObj = response.getBody().get("clients");
+                List<?> clients = (clientsObj instanceof List<?>) ? (List<?>) clientsObj : List.of();
+                for (Object item : clients) {
                     if (!(item instanceof Map<?, ?> map)) {
                         continue;
                     }
@@ -275,10 +285,10 @@ public class UpmClient {
             }
 
             if (response.getStatusCode() == HttpStatus.FORBIDDEN) {
-                log.warn("UPM /api/oauth-clients returned 403, token may have expired.");
+                log.warn("UPM OAuth clients endpoint returned 403, credentials may have expired.");
             }
         } catch (Exception e) {
-            log.warn("UPM /api/oauth-clients failed: {}", e.getMessage());
+            log.warn("UPM OAuth clients fetch failed: {}", e.getMessage());
         }
 
         return Set.of();

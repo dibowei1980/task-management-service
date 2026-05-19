@@ -2,6 +2,7 @@ import { BridgeUser } from '../types';
 
 const TOKEN_KEY = 'bridge_token';
 const USER_KEY = 'bridge_user';
+const AUTH_METHOD_KEY = 'bridge_auth_method';
 
 export const authStorage = {
   getToken: (): string | null => sessionStorage.getItem(TOKEN_KEY),
@@ -14,9 +15,12 @@ export const authStorage = {
   },
   setUser: (user: BridgeUser) => sessionStorage.setItem(USER_KEY, JSON.stringify(user)),
   removeUser: () => sessionStorage.removeItem(USER_KEY),
+  getAuthMethod: (): string | null => sessionStorage.getItem(AUTH_METHOD_KEY),
+  setAuthMethod: (method: string) => sessionStorage.setItem(AUTH_METHOD_KEY, method),
   clear: () => {
     sessionStorage.removeItem(TOKEN_KEY);
     sessionStorage.removeItem(USER_KEY);
+    sessionStorage.removeItem(AUTH_METHOD_KEY);
   },
 };
 

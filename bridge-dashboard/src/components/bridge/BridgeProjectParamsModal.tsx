@@ -5,6 +5,7 @@ import { bridgeUserService } from '../../services/bridgeService';
 import { useAuth } from '../../context/AuthContext';
 import { logger } from '../../utils/logger';
 import { toast } from '../common/Toast';
+import { ServerFileBrowser } from '../common/ServerFileBrowser';
 
 interface Props {
   project: BridgeTask;
@@ -32,6 +33,9 @@ export const BridgeProjectParamsModal: React.FC<Props> = ({ project, onClose, on
   const [intermediateRoot, setIntermediateRoot] = useState('');
   const [paramLocked, setParamLocked] = useState(false);
   const [paramLockMessage, setParamLockMessage] = useState<string | null>(null);
+  const [shpFileBrowserOpen, setShpFileBrowserOpen] = useState(false);
+  const [domDirBrowserOpen, setDomDirBrowserOpen] = useState(false);
+  const [intermediateRootBrowserOpen, setIntermediateRootBrowserOpen] = useState(false);
   const canEditProjectLeader = roles.includes('project:update_department')
     || roles.includes('PROJECT:UPDATE_DEPARTMENT')
     || roles.includes('project:update_global')
@@ -151,33 +155,63 @@ export const BridgeProjectParamsModal: React.FC<Props> = ({ project, onClose, on
         <div className="space-y-4">
           <div>
             <label className="block text-sm font-medium mb-1">桥梁矢量文件（SHP）路径</label>
-            <input
-              className="w-full border rounded p-2"
-              value={shpFilePath}
-              onChange={e => setShpFilePath(e.target.value)}
-              disabled={paramLocked}
-              placeholder="例如：D:/data/bridges.shp"
-            />
+            <div className="flex gap-2">
+              <input
+                className="w-full border rounded p-2"
+                value={shpFilePath}
+                onChange={e => setShpFilePath(e.target.value)}
+                disabled={paramLocked}
+                placeholder="例如：D:/data/bridges.shp"
+              />
+              {!paramLocked && (
+                <button
+                  className="px-3 py-2 text-sm border rounded hover:bg-gray-50"
+                  onClick={() => setShpFileBrowserOpen(true)}
+                >
+                  浏览
+                </button>
+              )}
+            </div>
           </div>
           <div>
             <label className="block text-sm font-medium mb-1">DOM目录</label>
-            <input
-              className="w-full border rounded p-2"
-              value={domDir}
-              onChange={e => setDomDir(e.target.value)}
-              disabled={paramLocked}
-              placeholder="例如：D:/data/dom_tiles"
-            />
+            <div className="flex gap-2">
+              <input
+                className="w-full border rounded p-2"
+                value={domDir}
+                onChange={e => setDomDir(e.target.value)}
+                disabled={paramLocked}
+                placeholder="例如：D:/data/dom_tiles"
+              />
+              {!paramLocked && (
+                <button
+                  className="px-3 py-2 text-sm border rounded hover:bg-gray-50"
+                  onClick={() => setDomDirBrowserOpen(true)}
+                >
+                  浏览
+                </button>
+              )}
+            </div>
           </div>
           <div>
             <label className="block text-sm font-medium mb-1">intermediate_root</label>
-            <input
-              className="w-full border rounded p-2"
-              value={intermediateRoot}
-              onChange={e => setIntermediateRoot(e.target.value)}
-              disabled={paramLocked}
-              placeholder="例如：D:/data/intermediate"
-            />
+            <div className="flex gap-2">
+              <input
+                className="w-full border rounded p-2"
+                value={intermediateRoot}
+                onChange={e => setIntermediateRoot(e.target.value)}
+                disabled={paramLocked}
+                placeholder="例如：D:/data/intermediate"
+              />
+              {!paramLocked && (
+                <button
+                  className="px-3 py-2 text-sm border rounded hover:bg-gray-50"
+                  onClick={() => setIntermediateRootBrowserOpen(true)}
+                >
+                  浏览
+                </button>
+              )}
+            </div>
           </div>
           {paramLockMessage && (
             <div className="text-sm text-gray-500">
@@ -208,6 +242,29 @@ export const BridgeProjectParamsModal: React.FC<Props> = ({ project, onClose, on
           </div>
         </div>
       </div>
+
+      <ServerFileBrowser
+        open={shpFileBrowserOpen}
+        onClose={() => setShpFileBrowserOpen(false)}
+        onSelect={path => setShpFilePath(path)}
+        mode="file"
+        fileFilter="shp"
+        title="选择 SHP 文件"
+      />
+      <ServerFileBrowser
+        open={domDirBrowserOpen}
+        onClose={() => setDomDirBrowserOpen(false)}
+        onSelect={path => setDomDir(path)}
+        mode="directory"
+        title="选择 DOM 目录"
+      />
+      <ServerFileBrowser
+        open={intermediateRootBrowserOpen}
+        onClose={() => setIntermediateRootBrowserOpen(false)}
+        onSelect={path => setIntermediateRoot(path)}
+        mode="directory"
+        title="选择中间数据目录"
+      />
     </div>
   );
 };

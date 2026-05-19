@@ -9,22 +9,23 @@ import { BridgeProjectParamsModal } from './BridgeProjectParamsModal';
 import { parseJson } from '../../utils/json';
 import { getTaskFailureMessage } from '../../utils/taskHelpers';
 import { BRIDGE_APP_EXTERNAL_SYSTEM, BRIDGE_PROJECT_TYPES, parseFeedbackItems } from './projects/types';
-import type { DecomposeOrderStrategy, DecomposeOverwriteStrategy, FeedbackItem } from './projects/types';
+import type { DecomposeOrderStrategy, DecomposeOverwriteStrategy, DecomposeMaskGenerateStrategy, FeedbackItem } from './projects/types';
 import { logger } from '../../utils/logger';
 import { toast } from '../common/Toast';
 import { ConfirmDialog } from '../common/ConfirmDialog';
+import { ServerFileBrowser } from '../common/ServerFileBrowser';
 
 export const BridgeProjects: React.FC = () => {
   const { user } = useAuth();
   const permissions = useMemo(() => (user?.permissions as string[]) || [], [user?.permissions]);
-  const canReadGlobalProjects = permissions.includes('project:read');
-  const canReadDepartmentProjects = permissions.includes('project:read');
-  const canReadOwnProjects = permissions.includes('project:read');
-  const canReadParticipantProjects = permissions.includes('project:read');
-  const canDeleteProject = permissions.includes('project:delete');
+  const canReadGlobalProjects = permissions.includes('project:read_global') || permissions.includes('project:read');
+  const canReadDepartmentProjects = permissions.includes('project:read_department') || permissions.includes('project:read_global') || permissions.includes('project:read');
+  const canReadOwnProjects = permissions.includes('project:read_own') || permissions.includes('project:read_department') || permissions.includes('project:read_global') || permissions.includes('project:read');
+  const canReadParticipantProjects = permissions.includes('project:read_participant') || permissions.includes('project:read_own') || permissions.includes('project:read_department') || permissions.includes('project:read_global') || permissions.includes('project:read');
+  const canDeleteProject = permissions.includes('project:delete_global') || permissions.includes('project:delete_department') || permissions.includes('project:delete');
   const canCreateProject = permissions.includes('project:create');
   const canReadUsers = permissions.includes('user:read');
-  const canEditProject = permissions.includes('project:update');
+  const canEditProject = permissions.includes('project:update_global') || permissions.includes('project:update_department') || permissions.includes('project:update_own') || permissions.includes('project:update');
   const userId = user?.userId;
   const userName = user?.username;
   const userDepartmentId = user?.departmentId || undefined;
@@ -33,8 +34,8 @@ export const BridgeProjects: React.FC = () => {
     && !canReadDepartmentProjects
     && !canReadOwnProjects;
 
-  const shpFileInputRef = useRef<HTMLInputElement | null>(null);
-  const intermediateDirInputRef = useRef<HTMLInputElement | null>(null);
+  const [shpFileBrowserOpen, setShpFileBrowserOpen] = useState(false);
+  const [domDirBrowserOpen, setDomDirBrowserOpen] = useState(false);
 
   const [projects, setProjects] = useState<BridgeTask[]>([]);
   const [isCreating, setIsCreating] = useState(false);
@@ -50,11 +51,11 @@ export const BridgeProjects: React.FC = () => {
   const [userOptions, setUserOptions] = useState<BridgeUser[]>([]);
   const [shpFilePath, setShpFilePath] = useState('');
   const [domDir, setDomDir] = useState('');
-  const [intermediateRoot, setIntermediateRoot] = useState('D:/data/intermediate');
   const [decomposeProjectId, setDecomposeProjectId] = useState<string | null>(null);
   const [isDecomposeModalOpen, setIsDecomposeModalOpen] = useState(false);
   const [decomposeOrderStrategy, setDecomposeOrderStrategy] = useState<DecomposeOrderStrategy>('ASC');
   const [decomposeOverwriteStrategy, setDecomposeOverwriteStrategy] = useState<DecomposeOverwriteStrategy>('SKIP');
+  const [decomposeMaskGenerate, setDecomposeMaskGenerate] = useState<DecomposeMaskGenerateStrategy>('AUTO');
   const [isDecomposeProgressOpen, setIsDecomposeProgressOpen] = useState(false);
   const [decomposeProgressProjectId, setDecomposeProgressProjectId] = useState<string | null>(null);
   const [decomposeProgressTaskId, setDecomposeProgressTaskId] = useState<string | null>(null);
@@ -261,8 +262,10 @@ export const BridgeProjects: React.FC = () => {
     const input = parseJson(project.inputParams);
     const order = typeof input['decompose_order_strategy'] === 'string' ? String(input['decompose_order_strategy']).toUpperCase() : '';
     const overwrite = typeof input['decompose_overwrite_strategy'] === 'string' ? String(input['decompose_overwrite_strategy']).toUpperCase() : '';
+    const maskGen = typeof input['decompose_mask_generate'] === 'string' ? String(input['decompose_mask_generate']).toUpperCase() : '';
     setDecomposeOrderStrategy(order === 'DESC' ? 'DESC' : 'ASC');
     setDecomposeOverwriteStrategy(overwrite === 'OVERWRITE' ? 'OVERWRITE' : 'SKIP');
+    setDecomposeMaskGenerate(maskGen === 'SKIP' ? 'SKIP' : 'AUTO');
     setDecomposeProjectId(project.id);
     setIsDecomposeModalOpen(true);
   };
@@ -278,6 +281,7 @@ export const BridgeProjects: React.FC = () => {
       const input = parseJson(project?.inputParams);
       input['decompose_order_strategy'] = decomposeOrderStrategy;
       input['decompose_overwrite_strategy'] = decomposeOverwriteStrategy;
+      input['decompose_mask_generate'] = decomposeMaskGenerate;
       await bridgeTaskService.updateTask(projectId, { inputParams: JSON.stringify(input) });
 
       const decomposeInput = {
@@ -376,8 +380,7 @@ export const BridgeProjects: React.FC = () => {
 
     const inputParams = {
       shp_file_path: shpFilePath.trim(),
-      dom_dir: domDir.trim(),
-      intermediate_root: intermediateRoot?.trim() || undefined
+      dom_dir: domDir.trim()
     };
 
     const externalTaskId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -760,69 +763,34 @@ export const BridgeProjects: React.FC = () => {
                     placeholder="例如：D:/data/bridges.shp"
                   />
                   <button
-                    className="px-3 py-2 text-sm border rounded disabled:opacity-50"
-                    onClick={() => shpFileInputRef.current?.click()}
-                    title="选择 ArcGIS Shapefile（.shp）主文件"
+                    className="px-3 py-2 text-sm border rounded hover:bg-gray-50"
+                    onClick={() => setShpFileBrowserOpen(true)}
+                    title="浏览服务器文件系统选择 .shp 文件"
                   >
-                    选择SHP文件
+                    浏览
                   </button>
                 </div>
-                <input
-                  ref={shpFileInputRef}
-                  type="file"
-                  accept=".shp"
-                  className="hidden"
-                  onChange={e => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                    const maybePath = (file as unknown as { path?: string }).path;
-                    if (maybePath && maybePath.toLowerCase().endsWith('.shp')) {
-                      setShpFilePath(maybePath);
-                    } else {
-                      setShpFilePath(file.name);
-                    }
-                    if (e.target) e.target.value = '';
-                  }}
-                />
                 <div className="text-xs text-gray-500 mt-1">
-                  ArcGIS Shapefile（SHP）格式：仅需提供 .shp 主文件路径，系统会自动推断同目录同名 .shx/.dbf 并校验。若系统对话框显示“AutoCAD 形源代码”，这是Windows文件关联名称，不影响实际校验逻辑。
+                  输入服务器上的 SHP 文件完整路径，或点击“浏览”从服务器文件系统选择。系统会自动推断同目录同名 .shx/.dbf 并校验。
                 </div>
               </div>
               <div className="col-span-2">
                 <label className="block text-sm font-medium mb-1">DOM目录</label>
-                <input
-                  className="w-full border rounded p-2"
-                  value={domDir}
-                  onChange={e => setDomDir(e.target.value)}
-                  placeholder="例如：D:/data/dom_tiles"
-                />
-              </div>
-              <div className="col-span-2">
-                <label className="block text-sm font-medium mb-1">intermediate_root</label>
                 <div className="flex gap-2">
-                  <input className="w-full border rounded p-2" value={intermediateRoot} onChange={e => setIntermediateRoot(e.target.value)} />
+                  <input
+                    className="w-full border rounded p-2"
+                    value={domDir}
+                    onChange={e => setDomDir(e.target.value)}
+                    placeholder="例如：D:/data/dom_tiles"
+                  />
                   <button
-                    className="px-3 py-2 text-sm border rounded"
-                    onClick={() => intermediateDirInputRef.current?.click()}
+                    className="px-3 py-2 text-sm border rounded hover:bg-gray-50"
+                    onClick={() => setDomDirBrowserOpen(true)}
+                    title="浏览服务器文件系统选择 DOM 目录"
                   >
-                    选择目录
+                    浏览
                   </button>
                 </div>
-                <input
-                  ref={intermediateDirInputRef}
-                  type="file"
-                  multiple
-                  {...({ webkitdirectory: '' } as unknown as React.InputHTMLAttributes<HTMLInputElement>)}
-                  className="hidden"
-                  onChange={e => {
-                    const first = e.target.files?.[0];
-                    if (!first) return;
-                    const rel = (first as unknown as { webkitRelativePath?: string }).webkitRelativePath || '';
-                    const top = rel.split('/')[0] || first.name;
-                    setIntermediateRoot(top);
-                    if (e.target) e.target.value = '';
-                  }}
-                />
               </div>
             </div>
             <div className="mt-6 flex justify-end space-x-2">
@@ -894,6 +862,17 @@ export const BridgeProjects: React.FC = () => {
                 >
                   <option value="OVERWRITE">覆盖现有子任务</option>
                   <option value="SKIP">跳过现有子任务</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">掩膜生成</label>
+                <select
+                  className="w-full border rounded p-2"
+                  value={decomposeMaskGenerate}
+                  onChange={e => setDecomposeMaskGenerate((e.target.value as DecomposeMaskGenerateStrategy) || 'AUTO')}
+                >
+                  <option value="AUTO">分解后自动生成掩膜</option>
+                  <option value="SKIP">跳过掩膜生成</option>
                 </select>
               </div>
             </div>
@@ -993,6 +972,22 @@ export const BridgeProjects: React.FC = () => {
         confirmLabel="确认"
         onConfirm={() => confirmState?.onConfirm()}
         onCancel={() => setConfirmState(null)}
+      />
+
+      <ServerFileBrowser
+        open={shpFileBrowserOpen}
+        onClose={() => setShpFileBrowserOpen(false)}
+        onSelect={path => setShpFilePath(path)}
+        mode="file"
+        fileFilter="shp"
+        title="选择 SHP 文件"
+      />
+      <ServerFileBrowser
+        open={domDirBrowserOpen}
+        onClose={() => setDomDirBrowserOpen(false)}
+        onSelect={path => setDomDir(path)}
+        mode="directory"
+        title="选择 DOM 目录"
       />
     </div>
   );

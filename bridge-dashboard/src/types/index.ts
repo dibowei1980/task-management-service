@@ -43,7 +43,7 @@ export interface BridgeTask {
   plannedDueAt?: string | null;
   createdAt: string;
   inputParams?: string;
-  outputResults?: string;
+  outputResults?: string | Record<string, unknown>;
   parentTaskId?: string;
   source?: 'local' | 'tms';
   tmsSynced?: boolean;
