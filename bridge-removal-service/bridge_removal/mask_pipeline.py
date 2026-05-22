@@ -233,7 +233,7 @@ def _overlay_mask(image: np.ndarray, mask: np.ndarray) -> np.ndarray:
     return cv2.addWeighted(base, 0.7, overlay, 0.3, 0)
 
 
-def generate_bridge_masks(segments_dir: str, output_dir: str) -> Dict[str, Any]:
+def generate_bridge_masks(segments_dir: str, output_dir: str, enable_shadow: bool = False) -> Dict[str, Any]:
     _ensure_dir(output_dir)
     items = _load_segments(segments_dir)
     print("mask_pipline.py 149lines:Loaded segments:", items)
@@ -278,20 +278,29 @@ def generate_bridge_masks(segments_dir: str, output_dir: str) -> Dict[str, Any]:
             mask_cut = cv2.bitwise_and(mask_sam, segment_mask)
         else:
             mask_cut = mask_sam
-        shadow_mask = _shadow_mask(img, mask_cut)
-        merged = cv2.bitwise_or(mask_cut, shadow_mask)
+        if enable_shadow:
+            shadow_mask = _shadow_mask(img, mask_cut)
+            merged = cv2.bitwise_or(mask_cut, shadow_mask)
+        else:
+            shadow_mask = np.zeros_like(mask_cut)
+            merged = mask_cut
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         merged = cv2.dilate(merged, kernel, iterations=2)
         overlay = _overlay_mask(img, merged)
         base = os.path.splitext(os.path.basename(json_path))[0]
-        mask_sam_path = os.path.join(output_dir, f"{base}_mask_sam.png")
-        mask_cut_path = os.path.join(output_dir, f"{base}_mask_cut.png")
-        shadow_path = os.path.join(output_dir, f"{base}_shadow_mask.png")
-        merged_path = os.path.join(output_dir, f"{base}_mask_merged.png")
-        overlay_path = os.path.join(output_dir, f"{base}_mask_overlay.png")
+        seg_output_dir = os.path.join(output_dir, base)
+        _ensure_dir(seg_output_dir)
+        mask_sam_path = os.path.join(seg_output_dir, f"{base}_mask_sam.png")
+        mask_cut_path = os.path.join(seg_output_dir, f"{base}_mask_cut.png")
+        shadow_path = os.path.join(seg_output_dir, f"{base}_shadow_mask.png")
+        cut_merged_path = os.path.join(seg_output_dir, f"{base}_mask_cut_with_shadow.png")
+        merged_path = os.path.join(seg_output_dir, f"{base}_mask_with_shadow.png")
+        overlay_path = os.path.join(seg_output_dir, f"{base}_overlay.png")
         _safe_imwrite(mask_sam_path, mask_sam)
         _safe_imwrite(mask_cut_path, mask_cut)
         _safe_imwrite(shadow_path, shadow_mask)
+        cut_merged = cv2.bitwise_or(mask_cut, shadow_mask)
+        _safe_imwrite(cut_merged_path, cut_merged)
         _safe_imwrite(merged_path, merged)
         _safe_imwrite(overlay_path, overlay)
         segment_id = None
@@ -317,7 +326,7 @@ def generate_bridge_masks(segments_dir: str, output_dir: str) -> Dict[str, Any]:
     return manifest
 
 
-def generate_bridge_masks_from_json(json_path: str, output_dir: str) -> Dict[str, Any]:
+def generate_bridge_masks_from_json(json_path: str, output_dir: str, enable_shadow: bool = False) -> Dict[str, Any]:
     _ensure_dir(output_dir)
     manifest: Dict[str, Any] = {
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -361,20 +370,29 @@ def generate_bridge_masks_from_json(json_path: str, output_dir: str) -> Dict[str
         mask_cut = cv2.bitwise_and(mask_sam, segment_mask)
     else:
         mask_cut = mask_sam
-    shadow_mask = _shadow_mask(img, mask_cut)
-    merged = cv2.bitwise_or(mask_cut, shadow_mask)
+    if enable_shadow:
+        shadow_mask = _shadow_mask(img, mask_cut)
+        merged = cv2.bitwise_or(mask_cut, shadow_mask)
+    else:
+        shadow_mask = np.zeros_like(mask_cut)
+        merged = mask_cut
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     merged = cv2.dilate(merged, kernel, iterations=2)
     overlay = _overlay_mask(img, merged)
     base = os.path.splitext(os.path.basename(json_path))[0]
-    mask_sam_path = os.path.join(output_dir, f"{base}_mask_sam.png")
-    mask_cut_path = os.path.join(output_dir, f"{base}_mask_cut.png")
-    shadow_path = os.path.join(output_dir, f"{base}_shadow_mask.png")
-    merged_path = os.path.join(output_dir, f"{base}_mask_merged.png")
-    overlay_path = os.path.join(output_dir, f"{base}_mask_overlay.png")
+    seg_output_dir = os.path.join(output_dir, base)
+    _ensure_dir(seg_output_dir)
+    mask_sam_path = os.path.join(seg_output_dir, f"{base}_mask_sam.png")
+    mask_cut_path = os.path.join(seg_output_dir, f"{base}_mask_cut.png")
+    shadow_path = os.path.join(seg_output_dir, f"{base}_shadow_mask.png")
+    cut_merged_path = os.path.join(seg_output_dir, f"{base}_mask_cut_with_shadow.png")
+    merged_path = os.path.join(seg_output_dir, f"{base}_mask_with_shadow.png")
+    overlay_path = os.path.join(seg_output_dir, f"{base}_overlay.png")
     _safe_imwrite(mask_sam_path, mask_sam)
     _safe_imwrite(mask_cut_path, mask_cut)
     _safe_imwrite(shadow_path, shadow_mask)
+    cut_merged = cv2.bitwise_or(mask_cut, shadow_mask)
+    _safe_imwrite(cut_merged_path, cut_merged)
     _safe_imwrite(merged_path, merged)
     _safe_imwrite(overlay_path, overlay)
     segment_id = None

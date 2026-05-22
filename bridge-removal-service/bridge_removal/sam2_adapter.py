@@ -72,9 +72,13 @@ class SAM2Adapter:
         try:
             import torch
             if self.device == 'auto':
-                dev = 'cuda' if torch.cuda.is_available() else 'cpu'
-        except Exception:
-            dev = 'cpu'
+                if not torch.cuda.is_available():
+                    raise RuntimeError('CUDA 不可用，SAM2 需要 GPU 运行。请检查 CUDA 驱动和 PyTorch CUDA 版本。')
+                dev = 'cuda'
+        except RuntimeError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f'torch 导入失败: {e}')
         def map_type(mt: str) -> str:
             mt = (mt or '').strip().lower()
             return {'sam2_h': 'vit_h', 'sam2.1_h': 'vit_h', 'sam2.1_l':'vit_l', 'sam2_l': 'vit_l', 'sam2.1_l': 'vit_l', 'sam2_b': 'vit_b', 'sam2.1_b': 'vit_b'}.get(mt, mt)
@@ -90,12 +94,16 @@ class SAM2Adapter:
                     cfg = ''
             if cfg and Path(cfg).exists():
                 sam = build_sam2(cfg, self.ckpt)
-                sam.to(dev)
+                try:
+                    sam.to(dev)
+                except RuntimeError as e:
+                    raise RuntimeError(f'SAM2 模型加载到 {dev} 失败: {e}。请检查 GPU 显存和 CUDA 驱动。')
                 self.predictor = SAM2ImagePredictor(sam)
                 return
+        except RuntimeError:
+            raise
         except Exception as e:
-            log(e)
-            raise RuntimeError('SAM2/SAM 加载失败，请检查模型类型与权重路径')
+            raise RuntimeError(f'SAM2/SAM 加载失败: {e}，请检查模型类型与权重路径')
 
     def _image_from_data_url(self, data_url: str):
         header, b64 = data_url.split(',', 1)
@@ -310,7 +318,9 @@ class SAM2Adapter:
             from sam2.build_sam import build_sam2
             from sam2.sam2_image_predictor import SAM2ImagePredictor
             import torch
-            dev = 'cuda' if torch.cuda.is_available() else 'cpu'
+            if not torch.cuda.is_available():
+                raise RuntimeError('CUDA 不可用，SAM2 autosegment 需要 GPU 运行。请检查 CUDA 驱动和 PyTorch CUDA 版本。')
+            dev = 'cuda'
             cfg = getattr(self, 'config_path', '')
             if not cfg:
                 try:

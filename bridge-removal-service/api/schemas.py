@@ -138,6 +138,10 @@ class InpaintStartBody(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     input_params: Optional[Dict[str, Any]] = Field(alias="inputParams", default=None)
+    segment_json_path: str = Field(alias="segmentJsonPath", default="", max_length=512)
+    image_path: str = Field(alias="imagePath", default="", max_length=512)
+    removal_mask_path: str = Field(alias="removalMaskPath", default="", max_length=512)
+    crop_mask_path: str = Field(alias="cropMaskPath", default="", max_length=512)
 
 
 class InpaintResultBody(BaseModel):

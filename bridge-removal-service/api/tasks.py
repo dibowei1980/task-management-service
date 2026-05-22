@@ -95,7 +95,7 @@ def _read_segment_json(json_path: str) -> dict | None:
         return None
 
 
-def _run_sam2_pipeline(segment_json_path: str, masks_dir: str, task_id: str) -> dict:
+def _run_sam2_pipeline(segment_json_path: str, masks_dir: str, task_id: str, enable_shadow: bool = False) -> dict:
     from bridge_removal.mask_pipeline import run_mask_generation, generate_bridge_masks_from_json
     payload = {
         "segment_json_path": segment_json_path,
@@ -106,7 +106,7 @@ def _run_sam2_pipeline(segment_json_path: str, masks_dir: str, task_id: str) -> 
         result = run_mask_generation(task_id, payload_text)
     except Exception as e:
         logger.warning("SAM2 pipeline failed, falling back to polygon: %s", e)
-        return generate_bridge_masks_from_json(segment_json_path, masks_dir)
+        return generate_bridge_masks_from_json(segment_json_path, masks_dir, enable_shadow=enable_shadow)
     segments = []
     has_error = False
     if isinstance(result, dict):
@@ -116,7 +116,7 @@ def _run_sam2_pipeline(segment_json_path: str, masks_dir: str, task_id: str) -> 
                 break
     if has_error:
         logger.warning("SAM2 pipeline returned errors, falling back to polygon")
-        return generate_bridge_masks_from_json(segment_json_path, masks_dir)
+        return generate_bridge_masks_from_json(segment_json_path, masks_dir, enable_shadow=enable_shadow)
     if isinstance(result, dict):
         for item in result.get("items", []):
             seg_entry = {
@@ -794,6 +794,8 @@ def mask_generate(task_id: str):
         if not sam2_ok:
             logger.info("SAM2 not available, all segments will use polygon pipeline")
 
+        enable_shadow = bool(merged_params.get("enable_shadow", False))
+
         all_segments = []
         errors = []
 
@@ -807,9 +809,9 @@ def mask_generate(task_id: str):
                 big = is_big_bridge(seg_data) if seg_data else False
                 use_sam2 = sam2_ok and big
                 if use_sam2:
-                    result = _run_sam2_pipeline(item_path, masks_dir, task_id)
+                    result = _run_sam2_pipeline(item_path, masks_dir, task_id, enable_shadow=enable_shadow)
                 else:
-                    result = generate_bridge_masks_from_json(item_path, masks_dir)
+                    result = generate_bridge_masks_from_json(item_path, masks_dir, enable_shadow=enable_shadow)
                     for seg in result.get("segments", []):
                         if big and not sam2_ok:
                             seg["pipeline"] = "polygon_sam2_unavailable"
@@ -834,9 +836,9 @@ def mask_generate(task_id: str):
             big = is_big_bridge(seg_data) if seg_data else False
             use_sam2 = sam2_ok and big
             if use_sam2:
-                result = _run_sam2_pipeline(segment_json_path, masks_dir, task_id)
+                result = _run_sam2_pipeline(segment_json_path, masks_dir, task_id, enable_shadow=enable_shadow)
             else:
-                result = generate_bridge_masks_from_json(segment_json_path, masks_dir)
+                result = generate_bridge_masks_from_json(segment_json_path, masks_dir, enable_shadow=enable_shadow)
                 for seg in result.get("segments", []):
                     if big and not sam2_ok:
                         seg["pipeline"] = "polygon_sam2_unavailable"
@@ -848,7 +850,7 @@ def mask_generate(task_id: str):
         else:
             segments_dir = os.path.join(task_dir, "segments")
             if os.path.isdir(segments_dir):
-                result = generate_bridge_masks(segments_dir, masks_dir)
+                result = generate_bridge_masks(segments_dir, masks_dir, enable_shadow=enable_shadow)
                 if result.get("error"):
                     return api_ok({"mask_manifest": {"error": result["error"]}})
                 all_segments = result.get("segments", [])
@@ -925,20 +927,81 @@ def mask_save(task_id: str):
 @validate_body(InpaintStartBody)
 def inpaint_start(task_id: str):
     body = get_validated_body()
-    input_params = body.get("input_params", {})
+    input_params = body.get("input_params") or {}
 
     project = find_project_by_task_id(task_id)
     if not project:
         return api_error("not_found", "Task not found", 404)
+
+    db_input_params = project.get("input_params") or {}
+    if isinstance(db_input_params, str):
+        try:
+            db_input_params = json.loads(db_input_params)
+        except (json.JSONDecodeError, TypeError):
+            db_input_params = {}
+    merged_params = {**db_input_params, **input_params}
+
+    segment_json_path = body.get("segment_json_path", "")
+    image_path = body.get("image_path", "")
+    removal_mask_path = body.get("removal_mask_path", "")
+    crop_mask_path = body.get("crop_mask_path", "")
+
+    if not image_path:
+        image_path = merged_params.get("image_path", "")
+    if not segment_json_path:
+        segment_json_path = merged_params.get("segment_json_path", "")
+    if not removal_mask_path:
+        removal_mask_path = merged_params.get("removal_mask_path", "")
+    if not crop_mask_path:
+        crop_mask_path = merged_params.get("crop_mask_path", "")
+
+    intermediate_path = _resolve_intermediate_path(project, merged_params)
+    os.makedirs(intermediate_path, exist_ok=True)
+
+    api_key = merged_params.get("runninghub_api_key", "") or os.getenv("RUNNINGHUB_API_KEY", "")
+    if not api_key:
+        return api_error("config_error", "RunningHub API Key 未配置，请设置环境变量 RUNNINGHUB_API_KEY 或在 input_params 中配置 runninghub_api_key", 400)
+
+    if not image_path or not os.path.isfile(image_path):
+        return api_error("bad_request", f"原始影像路径无效: {image_path}", 400)
+    if not removal_mask_path or not os.path.isfile(removal_mask_path):
+        return api_error("bad_request", f"移除掩膜路径无效: {removal_mask_path}", 400)
+    if not crop_mask_path or not os.path.isfile(crop_mask_path):
+        return api_error("bad_request", f"裁剪掩膜路径无效: {crop_mask_path}", 400)
+
+    seed = str(merged_params.get("seed", ""))
 
     job_id = create_job_record(task_id, "INPAINT_START", input_params)
 
     def _run():
         try:
             update_job_status(job_id, "IN_PROGRESS")
-            result = run_inpaint_fill(task_id, input_params)
+            from bridge_removal.inpaint_gen_Runninghub import qwen_bridge_removal, TaskPollError
+            output_path = os.path.join(intermediate_path, "inpainted_patch.tif")
+            result_path = qwen_bridge_removal(
+                api_key, image_path, removal_mask_path, crop_mask_path, output_path, seed=seed, job_id=job_id
+            )
+            result = {
+                "step": {"name": "inpaint_fill", "status": "completed"},
+                "artifacts": {
+                    "inpainted_patch_path": result_path,
+                    "segment_json_path": segment_json_path,
+                    "image_path": image_path,
+                    "removal_mask_path": removal_mask_path,
+                    "crop_mask_path": crop_mask_path,
+                }
+            }
             update_job_status(job_id, "COMPLETED", results=result)
+        except TaskPollError as e:
+            error_result = {
+                "step": {"name": "inpaint_fill", "status": "failed"},
+                "error": e.reason,
+                "error_code": "CANCELLED" if e.status == "cancelled" else "TASK_FAILED",
+                "task_id": e.task_id or "",
+            }
+            update_job_status(job_id, "FAILED", error=str(e.reason), results=error_result)
         except Exception as e:
+            logger.exception("Inpaint failed for task %s", task_id)
             update_job_status(job_id, "FAILED", error=str(e))
 
     threading.Thread(target=_run, daemon=True).start()
@@ -962,7 +1025,27 @@ def inpaint_cancel(task_id: str):
     if not job or job["status"] != "IN_PROGRESS":
         return api_ok({"task_id": task_id, "status": "NO_ACTIVE_JOB"})
     job["status"] = "CANCELLED"
-    return api_ok({"task_id": task_id, "status": "CANCELLED"})
+
+    project = find_project_by_task_id(task_id)
+    api_key = ""
+    if project:
+        db_ip = project.get("input_params") or {}
+        if isinstance(db_ip, str):
+            try:
+                db_ip = json.loads(db_ip)
+            except (json.JSONDecodeError, TypeError):
+                db_ip = {}
+        api_key = db_ip.get("runninghub_api_key", "") or os.getenv("RUNNINGHUB_API_KEY", "")
+
+    cancel_results = []
+    if api_key:
+        try:
+            from bridge_removal.inpaint_gen_Runninghub import clear_pool_and_cancel_runninghub_tasks
+            cancel_results = clear_pool_and_cancel_runninghub_tasks(api_key, job.get("job_id"))
+        except Exception as e:
+            logger.warning("Failed to cancel RunningHub tasks: %s", e)
+
+    return api_ok({"task_id": task_id, "status": "CANCELLED", "cancel_results": cancel_results})
 
 
 @tasks_bp.route("/<task_id>/inpaint-retry", methods=["POST"])

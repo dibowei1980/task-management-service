@@ -1,12 +1,7 @@
 import numpy as np
 import cv2
 import matplotlib
-# matplotlib.use('Agg') # 设置非交互式后端，防止plt.show()或窗口卡死
-# 如果需要弹出窗口，使用默认后端或TkAgg/Qt5Agg
-try:
-    matplotlib.use('TkAgg')
-except:
-    pass # 如果失败则使用默认
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.font_manager import FontProperties
 
@@ -1070,8 +1065,7 @@ class ShadowDetector:
             plt.close(fig)
             print(f"可视化结果已保存至: {save_path}")
         else:
-            plt.show()
-        # plt.close()
+            plt.close(fig)
 
 
 def main():

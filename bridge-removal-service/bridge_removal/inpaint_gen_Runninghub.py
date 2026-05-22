@@ -7,11 +7,37 @@ import threading
 import os
 import hashlib
 import uuid
-API_HOST = "www.runninghub.cn"
+
+_DEFAULT_API_BASE = "https://www.runninghub.cn"
+
+def _get_api_base():
+    base = os.getenv("RUNNINGHUB_API_BASE", "").strip()
+    return base if base else _DEFAULT_API_BASE
+
+def _parse_api_base(base):
+    if base.startswith("https://"):
+        scheme = "https"
+        host = base[len("https://"):].rstrip("/")
+    elif base.startswith("http://"):
+        scheme = "http"
+        host = base[len("http://"):].rstrip("/")
+    else:
+        scheme = "https"
+        host = base.rstrip("/")
+    return scheme, host
+
+def _make_connection(host, scheme="https"):
+    if scheme == "https":
+        return http.client.HTTPSConnection(host)
+    return http.client.HTTPConnection(host)
+
+def _make_url(base, path):
+    return f"{base.rstrip('/')}/{path.lstrip('/')}"
 def get_nodo(webappId,Api_Key):
-    conn = http.client.HTTPSConnection(API_HOST)
+    scheme, host = _parse_api_base(_get_api_base())
+    conn = _make_connection(host, scheme)
     payload = ''
-    headers = {}
+    headers = {'Host': host}
     conn.request("GET", f"/api/webapp/apiCallDemo?apiKey={Api_Key}&webappId={webappId}", payload, headers)
     res = conn.getresponse()
     # 读取响应内容
@@ -27,9 +53,11 @@ def upload_file(API_KEY, file_path):
     """
     上传文件到 RunningHub 平台
     """
-    url = "https://www.runninghub.cn/task/openapi/upload"
+    base = _get_api_base()
+    scheme, host = _parse_api_base(base)
+    url = _make_url(base, "/task/openapi/upload")
     headers = {
-        'Host': 'www.runninghub.cn'
+        'Host': host
     }
     data = {
         'apiKey': API_KEY,
@@ -41,7 +69,8 @@ def upload_file(API_KEY, file_path):
     return response.json()
 # 1️⃣ 提交任务
 def submit_task(webapp_id, node_info_list,API_KEY):
-    conn = http.client.HTTPSConnection(API_HOST)
+    scheme, host = _parse_api_base(_get_api_base())
+    conn = _make_connection(host, scheme)
     payload = json.dumps({
         "webappId": webapp_id,
         "apiKey": API_KEY,
@@ -49,7 +78,7 @@ def submit_task(webapp_id, node_info_list,API_KEY):
         "nodeInfoList": node_info_list
     })
     headers = {
-        'Host': API_HOST,
+        'Host': host,
         'Content-Type': 'application/json'
     }
     conn.request("POST", "/task/openapi/ai-app/run", payload, headers)
@@ -58,13 +87,14 @@ def submit_task(webapp_id, node_info_list,API_KEY):
     conn.close()
     return data
 def query_task_outputs(task_id,API_KEY):
-    conn = http.client.HTTPSConnection(API_HOST)
+    scheme, host = _parse_api_base(_get_api_base())
+    conn = _make_connection(host, scheme)
     payload = json.dumps({
         "apiKey": API_KEY,
         "taskId": task_id
     })
     headers = {
-        'Host': API_HOST,
+        'Host': host,
         'Content-Type': 'application/json'
     }
     conn.request("POST", "/task/openapi/outputs", payload, headers)
@@ -74,13 +104,14 @@ def query_task_outputs(task_id,API_KEY):
     return data
 
 def query_task_status(task_id, API_KEY):
-    conn = http.client.HTTPSConnection(API_HOST)
+    scheme, host = _parse_api_base(_get_api_base())
+    conn = _make_connection(host, scheme)
     payload = json.dumps({
         "apiKey": API_KEY,
         "taskId": task_id
     })
     headers = {
-        'Host': API_HOST,
+        'Host': host,
         'Content-Type': 'application/json'
     }
     conn.request("POST", "/task/openapi/status", payload, headers)
@@ -90,13 +121,14 @@ def query_task_status(task_id, API_KEY):
     return data
 
 def cancel_task(task_id, API_KEY):
-    conn = http.client.HTTPSConnection(API_HOST)
+    scheme, host = _parse_api_base(_get_api_base())
+    conn = _make_connection(host, scheme)
     payload = json.dumps({
         "apiKey": API_KEY,
         "taskId": task_id
     })
     headers = {
-        'Host': API_HOST,
+        'Host': host,
         'Content-Type': 'application/json'
     }
     conn.request("POST", "/task/openapi/cancel", payload, headers)
@@ -125,6 +157,16 @@ def _payload_text(payload):
 def _is_task_not_found(payload):
     text = _payload_text(payload)
     return "APIKEY_TASK_NOT_FOUN" in text or "APIKEY_TASK_NOT_FOUND" in text
+
+def _resolve_download_url(file_url, api_key):
+    if file_url.startswith("http://") or file_url.startswith("https://"):
+        url = file_url
+    else:
+        base = _get_api_base()
+        url = f"{base.rstrip('/')}/{file_url.lstrip('/')}"
+    sep = "&" if "?" in url else "?"
+    url = f"{url}{sep}apiKey={api_key}"
+    return url
 
 def _poll_task_result(api_key, task_id, output_path, timeout=600, poll_interval=5):
     start_time = time.time()
@@ -155,7 +197,8 @@ def _poll_task_result(api_key, task_id, output_path, timeout=600, poll_interval=
                     last_error = f"未返回fileUrl: {outputs_payload}"
                 else:
                     try:
-                        response = requests.get(file_url, timeout=60)
+                        download_url = _resolve_download_url(file_url, api_key)
+                        response = requests.get(download_url, timeout=60)
                         response.raise_for_status()
                         with open(output_path, "wb") as f:
                             f.write(response.content)

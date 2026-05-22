@@ -35,6 +35,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
   const [batchMaskGenerating, setBatchMaskGenerating] = useState(false);
   const [batchMaskMessage, setBatchMaskMessage] = useState<string | null>(null);
   const [batchMaskError, setBatchMaskError] = useState<string | null>(null);
+  const [enableShadow, setEnableShadow] = useState(false);
   const selectAllRef = useRef<HTMLInputElement | null>(null);
   const userSelectedTabRef = useRef(false);
   const showOnlyMineTouchedRef = useRef(false);
@@ -255,7 +256,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
           continue;
         }
         try {
-          await bridgeTaskService.maskGenerate(task.id, { batch: batchItems });
+          await bridgeTaskService.maskGenerate(task.id, { batch: batchItems, inputParams: { enable_shadow: enableShadow } });
           generated += batchItems.length;
         } catch {
           failed += batchItems.length;
@@ -881,13 +882,24 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
         <div className="mt-3 flex flex-wrap items-center gap-3 rounded border bg-blue-50 px-3 py-2">
           <div className="text-sm font-medium text-blue-800">批任务生成组</div>
           {((activeTab === '待处理' && canDeleteTask) || activeTab === '处理中') && (
-            <button
-              className="px-3 py-1 text-sm border rounded bg-blue-600 text-white border-blue-600 disabled:opacity-50"
-              disabled={batchMaskGenerating}
-              onClick={runBatchMaskGenerate}
-            >
-              {batchMaskGenerating ? '批生成中...' : '掩膜批生成'}
-            </button>
+            <>
+              <label className="flex items-center gap-1 text-sm text-gray-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={enableShadow}
+                  onChange={(e) => setEnableShadow(e.target.checked)}
+                  className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                />
+                阴影识别
+              </label>
+              <button
+                className="px-3 py-1 text-sm border rounded bg-blue-600 text-white border-blue-600 disabled:opacity-50"
+                disabled={batchMaskGenerating}
+                onClick={runBatchMaskGenerate}
+              >
+                {batchMaskGenerating ? '批生成中...' : '掩膜批生成'}
+              </button>
+            </>
           )}
           {canDeleteTask && (
             <button

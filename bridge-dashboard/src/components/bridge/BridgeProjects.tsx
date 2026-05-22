@@ -183,6 +183,10 @@ export const BridgeProjects: React.FC = () => {
         }
       } catch (err) {
         if (disposed) return;
+        const axiosErr = err as { response?: { status?: number } } | null;
+        if (axiosErr?.response?.status === 404) {
+          return;
+        }
         logger.error('pollDecomposeProgress', err);
         setDecomposeProgressError(getErrorMessage(err, '获取分解进度失败'));
         setIsDecomposeDone(true);
@@ -264,7 +268,7 @@ export const BridgeProjects: React.FC = () => {
     const overwrite = typeof input['decompose_overwrite_strategy'] === 'string' ? String(input['decompose_overwrite_strategy']).toUpperCase() : '';
     const maskGen = typeof input['decompose_mask_generate'] === 'string' ? String(input['decompose_mask_generate']).toUpperCase() : '';
     setDecomposeOrderStrategy(order === 'DESC' ? 'DESC' : 'ASC');
-    setDecomposeOverwriteStrategy(overwrite === 'OVERWRITE' ? 'OVERWRITE' : 'SKIP');
+    setDecomposeOverwriteStrategy(overwrite === 'OVERWRITE' ? 'OVERWRITE' : overwrite === 'OVERWRITE_PENDING' ? 'OVERWRITE_PENDING' : 'SKIP');
     setDecomposeMaskGenerate(maskGen === 'SKIP' ? 'SKIP' : 'AUTO');
     setDecomposeProjectId(project.id);
     setIsDecomposeModalOpen(true);
@@ -729,7 +733,7 @@ export const BridgeProjects: React.FC = () => {
             <h2 className="text-xl font-bold mb-4">新建项目</h2>
             {isLocalMode && (
               <div className="mb-4 px-3 py-2 text-sm border rounded bg-blue-50 text-blue-700">
-                SSO 服务未连接 — 当前创建的为本地项目，仅在本系统内可见
+                TPM服务未连接 — 当前创建的为本地项目，仅在本系统内可见
               </div>
             )}
             {createSuccess && (
@@ -861,6 +865,7 @@ export const BridgeProjects: React.FC = () => {
                   onChange={e => setDecomposeOverwriteStrategy((e.target.value as DecomposeOverwriteStrategy) || 'SKIP')}
                 >
                   <option value="OVERWRITE">覆盖现有子任务</option>
+                  <option value="OVERWRITE_PENDING">仅覆盖待处理子任务</option>
                   <option value="SKIP">跳过现有子任务</option>
                 </select>
               </div>

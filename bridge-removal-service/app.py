@@ -23,9 +23,10 @@ def create_app():
     app = Flask(__name__)
     app.secret_key = os.getenv("BRIDGE_SECRET_KEY", secrets.token_hex(32))
 
+    _db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bridge_removal.db").replace("\\", "/")
     app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv(
         "DATABASE_URL",
-        f"sqlite:///{os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bridge_removal.db')}"
+        f"sqlite:///{_db_path}"
     )
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     db.init_app(app)

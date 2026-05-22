@@ -2,7 +2,7 @@ export const BRIDGE_APP_EXTERNAL_SYSTEM = 'bridge-removal-app';
 export const BRIDGE_PROJECT_TYPES = new Set(['BRIDGE_REMOVAL_BATCH', 'BRIDGE_REMOVAL_UNIT']);
 
 export type DecomposeOrderStrategy = 'ASC' | 'DESC';
-export type DecomposeOverwriteStrategy = 'OVERWRITE' | 'SKIP';
+export type DecomposeOverwriteStrategy = 'OVERWRITE' | 'OVERWRITE_PENDING' | 'SKIP';
 export type DecomposeMaskGenerateStrategy = 'AUTO' | 'SKIP';
 
 export type FeedbackItem = { stage?: string; result?: string; message?: string; at?: string; by?: string };

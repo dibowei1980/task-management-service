@@ -41,6 +41,15 @@ class ExtractMasksPipeline:
         base_dir = os.path.dirname(os.path.normpath(segment_json_path))
 
         image_info = segment_payload.get("image_info") or {}
+        if not image_info.get("filename"):
+            try:
+                with open(segment_json_path, "r", encoding="utf-8") as _f:
+                    seg_file_data = json.load(_f)
+                file_image_info = seg_file_data.get("image_info") or {}
+                if file_image_info.get("filename"):
+                    image_info = file_image_info
+            except Exception:
+                pass
         img_filename = image_info.get("filename")
         if not img_filename:
             raise ValueError("image_info.filename is required in segment_payload")

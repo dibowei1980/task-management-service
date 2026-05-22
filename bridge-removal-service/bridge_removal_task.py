@@ -2,9 +2,11 @@
 import os
 import sys
 import json
+import re
 import requests
 import uuid
 import time
+from typing import Optional
 from datetime import datetime
 from base_task import BaseTask
 from services.status_mapping import to_platform_status, WORKFLOW_STATUS_DEFAULT
@@ -313,8 +315,15 @@ class BridgeRemovalOrchestratorTask(BaseTask):
 
         parent_task_id = self.input_params.get("project_id") or self.task_id
         self._report_progress(api_url, headers, self.task_id, "处理中", 10, "开始检查已存在子任务")
-        existing_subtasks = _get_subtasks(api_url, headers, parent_task_id)
-        existing_subtasks = filter_operation_subtasks(existing_subtasks)
+
+        is_overwrite = overwrite_strategy in ("OVERWRITE", "OVERWRITE_PENDING")
+        if is_overwrite:
+            all_existing_raw = _get_subtasks(api_url, headers, parent_task_id)
+            existing_subtasks = [t for t in (all_existing_raw or []) if (t.get("category") or "").upper() != "SYSTEM_TASK"]
+            self._log(f"覆盖策略={overwrite_strategy}，已清除过滤条件（保留SYSTEM_TASK），获取 {len(existing_subtasks)} 个操作子任务")
+        else:
+            existing_subtasks = _get_subtasks(api_url, headers, parent_task_id)
+            existing_subtasks = filter_operation_subtasks(existing_subtasks)
         existing_by_bridge_id = self._index_subtasks_by_bridge_id(existing_subtasks)
 
         task_units = self._create_task_units_from_shp(api_url, headers, shp_file_path, dom_sources, dom_index, parent_task_id)
@@ -327,38 +336,123 @@ class BridgeRemovalOrchestratorTask(BaseTask):
         units_to_create = []
         deleted_existing = 0
         skipped_existing = 0
-        for unit in task_units:
-            unit_params = parse_input_params(unit.get("inputParams"))
-            bridge_id = unit_params.get("bridge_id")
-            existed_list = existing_by_bridge_id.get(str(bridge_id)) if bridge_id is not None else None
-            if existed_list:
-                if overwrite_strategy == "OVERWRITE":
-                    for existed in existed_list:
-                        _api_delete_task(api_url, headers, existed.get("id"))
-                        if not api_url:
-                            _delete_task_local(existed.get("id"))
-                        deleted_existing += 1
-                    existing_by_bridge_id.pop(str(bridge_id), None)
+        ids_to_delete = []
+        subtask_dirs_to_stage = []
+
+        from services.decompose_transaction import DecomposeTransaction
+        txn = DecomposeTransaction(operation_name=overwrite_strategy)
+
+        try:
+            txn.begin()
+
+            if overwrite_strategy == "OVERWRITE":
+                matched_bridge_ids = set()
+                for unit in task_units:
+                    unit_params = parse_input_params(unit.get("inputParams"))
+                    bid = unit_params.get("bridge_id")
+                    if bid is not None:
+                        matched_bridge_ids.add(str(bid))
+
+                for existed in existing_subtasks:
+                    params = parse_input_params(existed.get("inputParams"))
+                    bid = str(params.get("bridge_id", ""))
+                    ids_to_delete.append(existed.get("id"))
+                    sub_dirs = self._resolve_subtask_intermediate_dirs(existed, api_url)
+                    if sub_dirs:
+                        subtask_dirs_to_stage.extend(sub_dirs)
+
+                for unit in task_units:
                     units_to_create.append(unit)
-                else:
-                    skipped_existing += 1
-                    continue
+
+                existing_by_bridge_id.clear()
+
+            elif overwrite_strategy == "OVERWRITE_PENDING":
+                for unit in task_units:
+                    unit_params = parse_input_params(unit.get("inputParams"))
+                    bridge_id = unit_params.get("bridge_id")
+                    existed_list = existing_by_bridge_id.get(str(bridge_id)) if bridge_id is not None else None
+                    if existed_list:
+                        pending = [e for e in existed_list if (e.get("status") or "").upper() in ("PENDING", "CREATED", "")]
+                        non_pending = [e for e in existed_list if e not in pending]
+                        for existed in pending:
+                            ids_to_delete.append(existed.get("id"))
+                            sub_dirs = self._resolve_subtask_intermediate_dirs(existed, api_url)
+                            if sub_dirs:
+                                subtask_dirs_to_stage.extend(sub_dirs)
+                        if pending:
+                            existing_by_bridge_id.pop(str(bridge_id), None)
+                            units_to_create.append(unit)
+                        else:
+                            skipped_existing += len(non_pending)
+                    else:
+                        units_to_create.append(unit)
             else:
-                units_to_create.append(unit)
+                for unit in task_units:
+                    unit_params = parse_input_params(unit.get("inputParams"))
+                    bridge_id = unit_params.get("bridge_id")
+                    existed_list = existing_by_bridge_id.get(str(bridge_id)) if bridge_id is not None else None
+                    if existed_list:
+                        skipped_existing += 1
+                        continue
+                    else:
+                        units_to_create.append(unit)
 
-        self._report_progress(
-            api_url,
-            headers,
-            self.task_id,
-            "处理中",
-            25,
-            f"子任务生成计划：待创建 {len(units_to_create)}，覆盖删除 {deleted_existing}，跳过 {skipped_existing}"
-        )
+            self._report_progress(
+                api_url,
+                headers,
+                self.task_id,
+                "处理中",
+                20,
+                f"子任务生成计划：待创建 {len(units_to_create)}，覆盖删除 {len(ids_to_delete)}，跳过 {skipped_existing}"
+            )
 
-        if units_to_create:
-            created_tasks = self._create_subtasks_via_api(api_url, headers, units_to_create)
-        else:
-            created_tasks = []
+            deduped_dirs = []
+            seen = set()
+            for d in subtask_dirs_to_stage:
+                norm = os.path.normpath(d)
+                if norm in seen:
+                    continue
+                is_subpath = any(norm.startswith(s + os.sep) for s in seen)
+                if is_subpath:
+                    continue
+                seen.add(norm)
+                deduped_dirs.append(norm)
+
+            for sub_dir in deduped_dirs:
+                if os.path.exists(sub_dir):
+                    try:
+                        txn.stage_delete_path(sub_dir)
+                        self._log(f"已暂存待删除目录: {sub_dir}")
+                    except Exception as stage_ex:
+                        self._log(f"暂存删除目录失败: {sub_dir}, err={stage_ex}")
+
+            if ids_to_delete:
+                try:
+                    txn.stage_delete_db_records(ids_to_delete, api_url, headers)
+                    deleted_existing = len(ids_to_delete)
+                    self._log(f"已事务性删除 {deleted_existing} 个子任务DB记录")
+                except Exception as del_ex:
+                    self._log(f"事务性删除子任务失败，正在回滚: {del_ex}")
+                    txn.rollback()
+                    raise RuntimeError(f"覆盖删除子任务失败（已回滚）: {del_ex}")
+
+            if units_to_create:
+                created_tasks = self._create_subtasks_via_api(api_url, headers, units_to_create)
+            else:
+                created_tasks = []
+
+            for ct in (created_tasks or []):
+                if ct and ct.get("id"):
+                    txn._created_task_ids.append(ct["id"])
+
+            txn.commit()
+            self._log(f"事务已提交：删除 {deleted_existing}，新建 {len(units_to_create)}")
+        except Exception as txn_ex:
+            if not txn.is_rolled_back:
+                txn.rollback()
+            self._log(f"覆盖操作事务回滚完成: {txn_ex}")
+            raise
+
         created_task_ids = {t.get("id") for t in (created_tasks or []) if t and t.get("id")}
 
         all_subtasks = _get_subtasks(api_url, headers, parent_task_id)
@@ -378,6 +472,14 @@ class BridgeRemovalOrchestratorTask(BaseTask):
                 except Exception as ex:
                     self._log(f"更新子任务DOM/impact_scope失败: taskId={t.get('id')}, err={ex}")
             self._report_progress(api_url, headers, self.task_id, "处理中", 88, "已更新子任务 impact_scope 与 source_doms")
+        elif overwrite_strategy == "OVERWRITE_PENDING":
+            for t in all_subtasks:
+                if t.get("id") in created_task_ids or (t.get("status") or "").upper() in ("PENDING", "CREATED", ""):
+                    try:
+                        self._recompute_scope_and_source_doms(api_url, headers, t, dom_sources, dom_index)
+                    except Exception as ex:
+                        self._log(f"更新子任务DOM/impact_scope失败: taskId={t.get('id')}, err={ex}")
+            self._report_progress(api_url, headers, self.task_id, "处理中", 88, "已更新新增及待处理子任务 impact_scope 与 source_doms")
         else:
             if created_task_ids:
                 for t in all_subtasks:
@@ -398,6 +500,13 @@ class BridgeRemovalOrchestratorTask(BaseTask):
             ids = [t.get("id") for t in all_subtasks if t and t.get("id")]
             self._report_progress(api_url, headers, self.task_id, "处理中", 90, f"开始分割{len(ids)}个子任务")
             self._run_segmentation_step(api_url, headers, ids, overwrite=True)
+        elif overwrite_strategy == "OVERWRITE_PENDING":
+            pending_or_created = [t.get("id") for t in all_subtasks if t and t.get("id") and (t.get("id") in created_task_ids or (t.get("status") or "").upper() in ("PENDING", "CREATED", ""))]
+            if pending_or_created:
+                self._report_progress(api_url, headers, self.task_id, "处理中", 90, f"开始分割新增及待处理子任务{len(pending_or_created)}个")
+                self._run_segmentation_step(api_url, headers, pending_or_created, overwrite=True)
+            else:
+                self._report_progress(api_url, headers, self.task_id, "处理中", 90, "无待处理子任务：跳过分割步骤")
         else:
             ids = [t.get("id") for t in all_subtasks if t and t.get("id") in created_task_ids]
             if ids:
@@ -549,6 +658,8 @@ class BridgeRemovalOrchestratorTask(BaseTask):
         self._log("开始执行掩膜生成步骤...")
         self._report_progress(api_url, headers, self.task_id, "处理中", 94, "开始执行掩膜生成步骤...")
 
+        enable_shadow = bool(self.input_params.get("enable_shadow", False))
+
         timeout_seconds = self.input_params.get("preprocess_api_timeout_sec") or 300
         try:
             timeout_seconds = int(timeout_seconds)
@@ -565,7 +676,7 @@ class BridgeRemovalOrchestratorTask(BaseTask):
                     resp = requests.post(
                         f"{api_url}/tasks/{task_id}/mask-generate",
                         headers=headers,
-                        json={},
+                        json={"inputParams": {"enable_shadow": enable_shadow}},
                         timeout=timeout_seconds,
                     )
                     if resp.status_code not in (200, 201):
@@ -601,8 +712,42 @@ class BridgeRemovalOrchestratorTask(BaseTask):
                         masks_dir = os.path.join(task_dir, "masks")
                         os.makedirs(masks_dir, exist_ok=True)
                         if os.path.isdir(segments_dir):
-                            from bridge_removal.mask_pipeline import generate_bridge_masks
-                            generate_bridge_masks(segments_dir, masks_dir)
+                            from bridge_removal.mask_pipeline import (
+                                generate_bridge_masks,
+                                generate_bridge_masks_from_json,
+                                is_big_bridge,
+                                _sam2_available,
+                                run_mask_generation,
+                            )
+                            sam2_ok = _sam2_available()
+                            seg_json_files = [
+                                os.path.join(segments_dir, f)
+                                for f in os.listdir(segments_dir)
+                                if f.lower().endswith(".json") and not f.endswith("_segments.json")
+                            ]
+                            if sam2_ok and seg_json_files:
+                                for seg_json_path in seg_json_files:
+                                    try:
+                                        with open(seg_json_path, "r", encoding="utf-8") as _f:
+                                            seg_data = json.load(_f)
+                                        big = is_big_bridge(seg_data)
+                                    except Exception:
+                                        big = False
+                                    if big:
+                                        payload = {
+                                            "segment_json_path": seg_json_path,
+                                            "task_id": task_id,
+                                        }
+                                        payload_text = json.dumps(payload, ensure_ascii=False)
+                                        try:
+                                            run_mask_generation(task_id, payload_text)
+                                        except Exception as _ex:
+                                            self._log(f"SAM2 pipeline failed for {seg_json_path}, falling back: {_ex}")
+                                            generate_bridge_masks_from_json(seg_json_path, masks_dir, enable_shadow=enable_shadow)
+                                    else:
+                                        generate_bridge_masks_from_json(seg_json_path, masks_dir, enable_shadow=enable_shadow)
+                            else:
+                                generate_bridge_masks(segments_dir, masks_dir, enable_shadow=enable_shadow)
                         else:
                             err = "segments directory not found"
                     else:
@@ -974,6 +1119,42 @@ class BridgeRemovalOrchestratorTask(BaseTask):
             if key not in result:
                 result[key] = []
             result[key].append(t)
+        return result
+
+    def _resolve_subtask_intermediate_dirs(self, subtask: dict, api_url) -> list:
+        params = parse_input_params(subtask.get("inputParams") or subtask.get("input_params"))
+        result = []
+        intermediate_path = params.get("intermediate_path")
+        if intermediate_path and os.path.isdir(intermediate_path):
+            result.append(os.path.normpath(intermediate_path))
+        task_id = subtask.get("id") or subtask.get("project_id") or ""
+        if not task_id:
+            return result
+        intermediate_root = params.get("intermediate_root")
+        if not intermediate_root:
+            parent_task_id = subtask.get("parent_task_id") or self.input_params.get("project_id") or self.task_id
+            if parent_task_id:
+                parent_data = _get_task(api_url, None, parent_task_id) if api_url else None
+                if not parent_data and not api_url:
+                    from services.project_service import get_project
+                    parent_proj = get_project(parent_task_id)
+                    if parent_proj:
+                        parent_data = parent_proj
+                if parent_data:
+                    parent_ip = parse_input_params(parent_data.get("inputParams") or parent_data.get("input_params"))
+                    intermediate_root = parent_ip.get("intermediate_root")
+        if not intermediate_root:
+            intermediate_root = _get_intermediate_root()
+        bridge_id = params.get("bridge_id") or ""
+        safe_bridge_id = re.sub(r'[^\w\-.]', '_', str(bridge_id)) if bridge_id else "bridge"
+        parent_task_id = subtask.get("parent_task_id") or ""
+        project_dir = str(parent_task_id) if parent_task_id else ""
+        task_dir = os.path.normpath(os.path.join(str(intermediate_root), project_dir, str(task_id)))
+        if os.path.isdir(task_dir) and task_dir not in result:
+            result.append(task_dir)
+        inner_dir = os.path.join(task_dir, safe_bridge_id)
+        if os.path.isdir(inner_dir) and inner_dir not in result:
+            result.append(inner_dir)
         return result
 
     def _recompute_scope_and_source_doms(self, api_url, headers, task_data, dom_sources, dom_index: DomTileIndex):

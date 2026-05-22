@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import threading
 import uuid
 from datetime import datetime
@@ -17,6 +18,7 @@ from services.project_service import (
 )
 from services.job_service import create_job_record, update_job_status, find_jobs_by_project
 from services.callback_service import callback_task_status
+from services.decompose_transaction import DecomposeTransaction
 
 logger = logging.getLogger(__name__)
 
@@ -237,6 +239,27 @@ def _find_subtasks_recursive(project_id: str) -> list:
     return results
 
 
+def _find_all_children_recursive(project_id: str) -> list:
+    from db.repository import ProjectRepository
+    from services.project_service import db_model_to_project_dict
+
+    results = []
+    seen = set()
+
+    def _collect(parent_id: str):
+        children = ProjectRepository.find_by_parent(parent_id)
+        for m in children:
+            if m.id in seen:
+                continue
+            seen.add(m.id)
+            p = db_model_to_project_dict(m)
+            results.append(project_to_task_response(p))
+            _collect(m.id)
+
+    _collect(project_id)
+    return results
+
+
 @projects_bp.route("/<project_id>/jobs", methods=["GET"])
 @require_local_auth
 def list_project_jobs(project_id: str):
@@ -247,13 +270,118 @@ def list_project_jobs(project_id: str):
     return api_ok(subtasks)
 
 
+def _resolve_subtask_intermediate_dirs(subtask: dict) -> list:
+    from services.tms_api import parse_input_params
+
+    params = parse_input_params(subtask.get("inputParams") or subtask.get("input_params"))
+    result = []
+    intermediate_path = params.get("intermediate_path")
+    if intermediate_path and os.path.isdir(intermediate_path):
+        result.append(os.path.normpath(intermediate_path))
+    task_id = subtask.get("id") or subtask.get("project_id") or ""
+    if not task_id:
+        return result
+    intermediate_root = params.get("intermediate_root")
+    if not intermediate_root:
+        parent_task_id = subtask.get("parent_task_id") or subtask.get("project_id") or ""
+        if parent_task_id:
+            parent_proj = get_project(parent_task_id)
+            if parent_proj:
+                parent_ip = parse_input_params(parent_proj.get("inputParams") or parent_proj.get("input_params"))
+                intermediate_root = parent_ip.get("intermediate_root")
+    if not intermediate_root:
+        root_env = os.getenv("BRS_INTERMEDIATE_ROOT")
+        intermediate_root = root_env if root_env else "./intermediate"
+    bridge_id = params.get("bridge_id") or ""
+    safe_bridge_id = re.sub(r'[^\w\-.]', '_', str(bridge_id)) if bridge_id else "bridge"
+    parent_task_id = subtask.get("parent_task_id") or ""
+    project_dir = str(parent_task_id) if parent_task_id else ""
+    task_dir = os.path.normpath(os.path.join(str(intermediate_root), project_dir, str(task_id)))
+    if os.path.isdir(task_dir) and task_dir not in result:
+        result.append(task_dir)
+    inner_dir = os.path.join(task_dir, safe_bridge_id)
+    if os.path.isdir(inner_dir) and inner_dir not in result:
+        result.append(inner_dir)
+    return result
+
+
+def _dedupe_dirs(dirs: list) -> list:
+    deduped = []
+    seen = set()
+    for d in dirs:
+        norm = os.path.normpath(d)
+        if norm in seen:
+            continue
+        is_subpath = any(norm.startswith(s + os.sep) for s in seen)
+        if is_subpath:
+            continue
+        seen.add(norm)
+        deduped.append(norm)
+    return deduped
+
+
 @projects_bp.route("/<project_id>", methods=["DELETE"])
 @require_local_auth
 def delete_project(project_id: str):
     existing = get_project(project_id)
     if not existing:
         return api_error("not_found", "Project not found", 404)
-    delete_project_svc(project_id)
+
+    all_children = _find_all_children_recursive(project_id)
+    all_task_ids = [project_id] + [ch.get("id") for ch in all_children if ch.get("id")]
+
+    subtask_dirs = []
+    for ch in all_children:
+        if (ch.get("category") or "").upper() == "SUBTASK":
+            dirs = _resolve_subtask_intermediate_dirs(ch)
+            if dirs:
+                subtask_dirs.extend(dirs)
+
+    project_params = existing.get("input_params") or {}
+    if isinstance(project_params, str):
+        try:
+            project_params = json.loads(project_params)
+        except (json.JSONDecodeError, TypeError):
+            project_params = {}
+    intermediate_root = project_params.get("intermediate_root")
+    if not intermediate_root:
+        root_env = os.getenv("BRS_INTERMEDIATE_ROOT")
+        intermediate_root = root_env if root_env else "./intermediate"
+    project_intermediate_dir = os.path.normpath(os.path.join(str(intermediate_root), str(project_id)))
+    if os.path.isdir(project_intermediate_dir):
+        subtask_dirs.append(project_intermediate_dir)
+
+    deduped_dirs = _dedupe_dirs(subtask_dirs)
+
+    txn = DecomposeTransaction(operation_name="delete_project")
+    try:
+        txn.begin()
+
+        for d in deduped_dirs:
+            if os.path.exists(d):
+                try:
+                    txn.stage_delete_path(d)
+                    logger.info("Staged delete dir: %s", d)
+                except Exception as stage_ex:
+                    logger.warning("Failed to stage delete dir %s: %s", d, stage_ex)
+
+        if all_task_ids:
+            try:
+                txn.stage_delete_db_records(all_task_ids, None, None)
+                logger.info("Staged delete DB records: %d tasks", len(all_task_ids))
+            except Exception as del_ex:
+                logger.error("Failed to stage delete DB records, rolling back: %s", del_ex)
+                txn.rollback()
+                return api_error("delete_failed", f"Failed to delete project records: {str(del_ex)}", 500)
+
+        txn.commit()
+        logger.info("Project %s and %d children deleted successfully", project_id, len(all_children))
+    except Exception as ex:
+        if not txn.is_rolled_back:
+            txn.rollback()
+        logger.error("Delete project %s failed (rolled back): %s", project_id, ex)
+        return api_error("delete_failed", f"Failed to delete project: {str(ex)}", 500)
+
     return api_no_content()
 
 

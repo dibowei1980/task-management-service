@@ -34,6 +34,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
   const [maskGenerating, setMaskGenerating] = useState(false);
   const [, setMaskGenerateError] = useState<string | null>(null);
   const [, setMaskGenerateSuccess] = useState<string | null>(null);
+  const [enableShadow, setEnableShadow] = useState(false);
   const [runStatus, setRunStatus] = useState<string | null>(null);
   const [inpaintRunning, setInpaintRunning] = useState(false);
   const [inpaintJobId, setInpaintJobId] = useState<string | null>(null);
@@ -330,6 +331,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
     setMaskToast(null);
     bridgeApi.post(`/api/v1/tasks/${taskId}/mask-generate`, {
       segment_json_path: target.jsonPath,
+      inputParams: { enable_shadow: enableShadow },
     }).then(res => {
       const data = res.data as { maskManifest?: { artifacts?: { segmentCount?: number }; error?: unknown; segments?: Array<Record<string, unknown>> } } | null;
       const manifest = data && typeof data === 'object' ? data.maskManifest : null;
@@ -370,7 +372,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
     }).finally(() => {
       setMaskGenerating(false);
     });
-  }, [taskId, selected, showMask]);
+  }, [taskId, selected, showMask, enableShadow]);
 
   const updateInpaintState = useCallback((data: unknown) => {
     if (!data || typeof data !== 'object') return;
@@ -1782,6 +1784,15 @@ export const BridgeTaskLocatePage: React.FC = () => {
               掩膜编辑
             </button>
           )}
+          <label className="flex items-center gap-1 px-2 py-2 text-sm cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={enableShadow}
+              onChange={e => setEnableShadow(e.target.checked)}
+              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            阴影识别
+          </label>
           <div className="relative" ref={displayMenuRef}>
             <button
               className="list-none cursor-pointer px-3 py-2 text-sm border rounded bg-white"

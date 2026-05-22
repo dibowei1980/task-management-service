@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RunningHub 云端 API 接口规范</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --surface: #1e293b;
+    --surface2: #334155;
+    --border: #475569;
+    --text: #e2e8f0;
+    --text2: #94a3b8;
+    --accent: #38bdf8;
+    --accent2: #818cf8;
+    --green: #4ade80;
+    --red: #f87171;
+    --yellow: #fbbf24;
+    --orange: #fb923c;
+    --code-bg: #0d1117;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    padding: 2rem;
+  }
+  .container { max-width: 960px; margin: 0 auto; }
+  h1 {
+    font-size: 2rem;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 0.5rem;
+  }
+  .subtitle {
+    color: var(--text2);
+    font-size: 0.95rem;
+    margin-bottom: 2rem;
+    padding: 1rem;
+    background: var(--surface);
+    border-radius: 8px;
+    border-left: 3px solid var(--accent);
+  }
+  .subtitle code { color: var(--accent); background: var(--code-bg); padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+  h2 {
+    font-size: 1.4rem;
+    color: var(--accent);
+    margin-top: 2.5rem;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--surface2);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  h2 .num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    color: #fff;
+    font-size: 0.85rem;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .purpose {
+    color: var(--text2);
+    margin-bottom: 1rem;
+    font-size: 0.95rem;
+  }
+  .http-box {
+    background: var(--code-bg);
+    border: 1px solid var(--surface2);
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+    margin-bottom: 1rem;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 0.9rem;
+    overflow-x: auto;
+  }
+  .http-box .method {
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.85rem;
+  }
+  .method-get { background: #166534; color: var(--green); }
+  .method-post { background: #1e3a5f; color: var(--accent); }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 1rem;
+    font-size: 0.9rem;
+  }
+  th {
+    background: var(--surface);
+    color: var(--accent);
+    text-align: left;
+    padding: 0.6rem 1rem;
+    border-bottom: 2px solid var(--surface2);
+    font-weight: 600;
+  }
+  td {
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid var(--surface2);
+  }
+  tr:hover td { background: var(--surface); }
+  td code {
+    color: var(--accent);
+    background: var(--code-bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.88em;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--surface2);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    overflow-x: auto;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 0.88rem;
+    line-height: 1.6;
+  }
+  .parse-section {
+    background: var(--surface);
+    border-left: 3px solid var(--accent2);
+    border-radius: 0 8px 8px 0;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.5rem;
+  }
+  .parse-section h4 {
+    color: var(--accent2);
+    margin-bottom: 0.5rem;
+    font-size: 0.95rem;
+  }
+  .parse-section ul {
+    list-style: none;
+    padding: 0;
+  }
+  .parse-section li {
+    padding: 0.25rem 0;
+    font-size: 0.9rem;
+  }
+  .parse-section li::before {
+    content: '▸ ';
+    color: var(--accent2);
+  }
+  .parse-section code {
+    color: var(--accent);
+    background: var(--code-bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.88em;
+  }
+  .flow-box {
+    background: var(--code-bg);
+    border: 1px solid var(--surface2);
+    border-radius: 8px;
+    padding: 1.25rem;
+    margin-bottom: 1.5rem;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 0.88rem;
+    line-height: 1.8;
+    white-space: pre-wrap;
+    color: var(--text2);
+  }
+  .flow-box .step { color: var(--accent); font-weight: 600; }
+  .flow-box .arrow { color: var(--accent2); }
+  .flow-box .path { color: var(--green); }
+  .flow-box .detail { color: var(--text); }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    font-weight: 600;
+  }
+  .badge-green { background: #166534; color: var(--green); }
+  .badge-yellow { background: #713f12; color: var(--yellow); }
+  .badge-red { background: #7f1d1d; color: var(--red); }
+  .badge-orange { background: #7c2d12; color: var(--orange); }
+  .env-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 2fr;
+    gap: 0;
+    margin-bottom: 1.5rem;
+    border: 1px solid var(--surface2);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .env-grid .header {
+    background: var(--surface);
+    color: var(--accent);
+    padding: 0.6rem 1rem;
+    font-weight: 600;
+    font-size: 0.9rem;
+    border-bottom: 1px solid var(--surface2);
+  }
+  .env-grid .cell {
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid var(--surface2);
+    font-size: 0.9rem;
+  }
+  .env-grid .cell code {
+    color: var(--accent);
+    background: var(--code-bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.88em;
+  }
+  .code-codes {
+    display: grid;
+    grid-template-columns: auto 1fr 1fr;
+    gap: 0;
+    border: 1px solid var(--surface2);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 1.5rem;
+  }
+  .code-codes .header {
+    background: var(--surface);
+    color: var(--accent);
+    padding: 0.6rem 1rem;
+    font-weight: 600;
+    font-size: 0.9rem;
+    border-bottom: 1px solid var(--surface2);
+  }
+  .code-codes .cell {
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid var(--surface2);
+    font-size: 0.9rem;
+  }
+  .note-box {
+    background: #1e293b;
+    border: 1px solid var(--yellow);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.5rem;
+    font-size: 0.9rem;
+  }
+  .note-box strong { color: var(--yellow); }
+  @media (max-width: 768px) {
+    body { padding: 1rem; }
+    h1 { font-size: 1.5rem; }
+    .env-grid, .code-codes { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>RunningHub 云端 API 接口规范</h1>
+
+<div class="subtitle">
+  基地址：<code>https://www.runninghub.cn</code>（可通过 <code>RUNNINGHUB_API_BASE</code> 环境变量覆盖）<br>
+  认证方式：所有请求通过 <code>apiKey</code> 参数传递，无需 Cookie/Session
+</div>
+
+<!-- 1. 获取节点信息 -->
+<h2><span class="num">1</span>获取节点信息</h2>
+<p class="purpose">获取 WebApp 的工作流节点列表（nodeInfoList），后续上传和提交都需要此列表。</p>
+
+<div class="http-box">
+  <span class="method method-get">GET</span> /api/webapp/apiCallDemo?apiKey=<span style="color:var(--accent)">{API_KEY}</span>&amp;webappId=<span style="color:var(--accent)">{WEBAPP_ID}</span>
+</div>
+
+<table>
+  <thead><tr><th>参数</th><th>类型</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td><code>apiKey</code></td><td>string</td><td>API 密钥</td></tr>
+    <tr><td><code>webappId</code></td><td>string</td><td>工作流 ID，当前硬编码为 <code>2029163935819108353</code></td></tr>
+  </tbody>
+</table>
+
+<p><strong>成功响应：</strong></p>
+<pre>{
+  "data": {
+    "nodeInfoList": [
+      {
+        "nodeId": "15",
+        "nodeName": "LoadImage",
+        "fieldName": "image",
+        "fieldType": "IMAGE",
+        "fieldValue": null,
+        "displayName": "输入图片",
+        "required": true,
+        "editable": true
+      },
+      {
+        "nodeId": "37",
+        "fieldName": "...",
+        "fieldType": "IMAGE",
+        "fieldValue": null
+      },
+      {
+        "nodeId": "45",
+        "fieldName": "...",
+        "fieldType": "IMAGE",
+        "fieldValue": null
+      },
+      {
+        "nodeId": "70",
+        "fieldName": "seed",
+        "fieldType": "string",
+        "fieldValue": null
+      }
+    ]
+  }
+}</pre>
+
+<div class="parse-section">
+  <h4>代码解析方式</h4>
+  <ul>
+    <li><code>response["data"]["nodeInfoList"]</code> → 返回 list</li>
+  </ul>
+</div>
+
+<!-- 2. 上传文件 -->
+<h2><span class="num">2</span>上传文件</h2>
+<p class="purpose">上传原图/掩膜图片，获取服务器端文件名（fileName），用于填入 nodeInfoList 的 fieldValue。</p>
+
+<div class="http-box">
+  <span class="method method-post">POST</span> /task/openapi/upload &nbsp; <span style="color:var(--text2)">Content-Type: multipart/form-data</span>
+</div>
+
+<table>
+  <thead><tr><th>参数</th><th>类型</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td><code>apiKey</code></td><td>string</td><td>API 密钥</td></tr>
+    <tr><td><code>fileType</code></td><td>string</td><td>固定值 <code>"input"</code></td></tr>
+    <tr><td><code>file</code></td><td>binary</td><td>上传的文件</td></tr>
+  </tbody>
+</table>
+
+<p><strong>Headers：</strong><code>Host: {host}</code></p>
+
+<p><strong>成功响应：</strong></p>
+<pre>{
+  "msg": "success",
+  "data": {
+    "fileName": "4fd8ad14-31ce-4ad8-9c7c-8c4b7f66a53d.png"
+  }
+}</pre>
+
+<div class="parse-section">
+  <h4>代码解析方式</h4>
+  <ul>
+    <li>判断成功：<code>response.get("msg") == "success"</code></li>
+    <li>提取文件名：<code>response.get("data", {}).get("fileName")</code></li>
+  </ul>
+</div>
+
+<!-- 3. 提交任务 -->
+<h2><span class="num">3</span>提交任务</h2>
+<p class="purpose">将填充好 fieldValue 的 nodeInfoList 提交执行。</p>
+
+<div class="http-box">
+  <span class="method method-post">POST</span> /task/openapi/ai-app/run &nbsp; <span style="color:var(--text2)">Content-Type: application/json</span>
+</div>
+
+<p><strong>请求体：</strong></p>
+<pre>{
+  "webappId": "2029163935819108353",
+  "apiKey": "xxx",
+  "nodeInfoList": [
+    {
+      "nodeId": "15",
+      "fieldName": "image",
+      "fieldType": "IMAGE",
+      "fieldValue": "4fd8ad14-31ce-4ad8-9c7c-8c4b7f66a53d.png",
+      "displayName": "输入图片",
+      "required": true,
+      "editable": true
+    },
+    {
+      "nodeId": "37",
+      "fieldType": "IMAGE",
+      "fieldValue": "上传后的fileName"
+    },
+    {
+      "nodeId": "45",
+      "fieldType": "IMAGE",
+      "fieldValue": "上传后的fileName"
+    },
+    {
+      "nodeId": "70",
+      "fieldType": "string",
+      "fieldValue": "42"
+    }
+  ]
+}</pre>
+
+<p><strong>Headers：</strong><code>Host: {host}</code>, <code>Content-Type: application/json</code></p>
+
+<p><strong>成功响应</strong> <span class="badge badge-green">code=0</span></p>
+<pre>{
+  "code": 0,
+  "data": {
+    "taskId": "10001"
+  }
+}</pre>
+
+<p><strong>队列满响应</strong> <span class="badge badge-yellow">code=421</span> <span style="color:var(--text2);font-size:0.9rem;">需重试</span></p>
+<pre>{
+  "code": 421,
+  "msg": "TASK_QUEUE_MAXED"
+}</pre>
+
+<div class="parse-section">
+  <h4>代码解析方式</h4>
+  <ul>
+    <li>判断成功：<code>response.get("code") == 0</code></li>
+    <li>提取任务 ID：<code>response["data"]["taskId"]</code></li>
+    <li>队列满重试：<code>code == 421 and msg == "TASK_QUEUE_MAXED"</code>，最多重试 <code>RUNNINGHUB_QUEUE_RETRY</code> 次（默认60），间隔 <code>RUNNINGHUB_QUEUE_RETRY_INTERVAL</code> 秒（默认5）</li>
+  </ul>
+</div>
+
+<!-- 4. 查询任务状态 -->
+<h2><span class="num">4</span>查询任务状态</h2>
+<p class="purpose">轮询检查任务是否完成（代码中实际主要用于检测任务是否被远程取消）。</p>
+
+<div class="http-box">
+  <span class="method method-post">POST</span> /task/openapi/status &nbsp; <span style="color:var(--text2)">Content-Type: application/json</span>
+</div>
+
+<p><strong>请求体：</strong></p>
+<pre>{
+  "apiKey": "xxx",
+  "taskId": "10001"
+}</pre>
+
+<p><strong>Headers：</strong><code>Host: {host}</code>, <code>Content-Type: application/json</code></p>
+
+<p style="color:var(--text2);font-size:0.9rem;">代码中未详细解析此接口的响应内容，仅用于检测是否包含 <code style="color:var(--accent)">"APIKEY_TASK_NOT_FOUND"</code> 字符串来判断远程取消。</p>
+
+<!-- 5. 查询任务输出 -->
+<h2><span class="num">5</span>查询任务输出</h2>
+<p class="purpose">轮询获取任务输出结果，包含输出文件的下载 URL。</p>
+
+<div class="http-box">
+  <span class="method method-post">POST</span> /task/openapi/outputs &nbsp; <span style="color:var(--text2)">Content-Type: application/json</span>
+</div>
+
+<p><strong>请求体：</strong></p>
+<pre>{
+  "apiKey": "xxx",
+  "taskId": "10001"
+}</pre>
+
+<p><strong>Headers：</strong><code>Host: {host}</code>, <code>Content-Type: application/json</code></p>
+
+<p><strong>成功响应</strong> <span class="badge badge-green">code=0</span> <span style="color:var(--text2);font-size:0.9rem;">任务完成有输出</span></p>
+<pre>{
+  "code": 0,
+  "data": [
+    {
+      "fileUrl": "https://www.runninghub.cn/task/openapi/output/xxx/result.png"
+    }
+  ]
+}</pre>
+
+<p><strong>任务失败响应</strong> <span class="badge badge-red">code=805</span></p>
+<pre>{
+  "code": 805,
+  "data": {
+    "failedReason": "执行超时"
+  }
+}</pre>
+
+<div class="parse-section">
+  <h4>代码解析方式</h4>
+  <ul>
+    <li>判断有输出：<code>response.get("code") == 0 and response.get("data")</code></li>
+    <li>提取下载 URL：<code>response["data"][0]["fileUrl"]</code>（data 是数组）</li>
+    <li>判断任务失败：<code>response.get("code") == 805</code></li>
+    <li>提取失败原因：<code>response["data"].get("failedReason")</code></li>
+    <li>下载结果：直接 GET <code>fileUrl</code>，将响应内容写入本地文件</li>
+  </ul>
+</div>
+
+<!-- 6. 取消任务 -->
+<h2><span class="num">6</span>取消任务</h2>
+<p class="purpose">取消正在运行的任务。</p>
+
+<div class="http-box">
+  <span class="method method-post">POST</span> /task/openapi/cancel &nbsp; <span style="color:var(--text2)">Content-Type: application/json</span>
+</div>
+
+<p><strong>请求体：</strong></p>
+<pre>{
+  "apiKey": "xxx",
+  "taskId": "10001"
+}</pre>
+
+<p><strong>Headers：</strong><code>Host: {host}</code>, <code>Content-Type: application/json</code></p>
+
+<p style="color:var(--text2);font-size:0.9rem;">代码中未详细解析此接口的响应内容。</p>
+
+<!-- 7. 特殊判断逻辑 -->
+<h2><span class="num">7</span>特殊判断逻辑</h2>
+
+<div class="note-box">
+  <strong>任务不存在/远程取消检测</strong>：代码检查响应文本中是否包含 <code>"APIKEY_TASK_NOT_FOUND"</code>（注意代码中有个拼写 <code>"APIKEY_TASK_NOT_FOUN"</code> 也被检查，这是容错处理）。
+</div>
+
+<pre>def _is_task_not_found(payload):
+    text = _payload_text(payload)
+    return "APIKEY_TASK_NOT_FOUN" in text or "APIKEY_TASK_NOT_FOUND" in text</pre>
+
+<!-- 8. 完整调用流程 -->
+<h2><span class="num">8</span>完整调用流程</h2>
+
+<div class="flow-box"><span class="step">1. get_nodo(webappId, apiKey)</span>
+   <span class="arrow">→</span> <span class="path">GET /api/webapp/apiCallDemo?apiKey=xxx&amp;webappId=xxx</span>
+   <span class="arrow">→</span> <span class="detail">获取 nodeInfoList</span>
+
+<span class="step">2. upload_file(apiKey, filePath) × 3次</span>
+   <span class="arrow">→</span> <span class="path">POST /task/openapi/upload</span>  <span class="detail">(apiKey + fileType="input" + file)</span>
+   <span class="arrow">→</span> <span class="detail">获取 fileName，填入 nodeInfoList 对应节点的 fieldValue</span>
+
+<span class="step">3. submit_task(webappId, nodeInfoList, apiKey)</span>
+   <span class="arrow">→</span> <span class="path">POST /task/openapi/ai-app/run</span>  <span class="detail">(webappId + apiKey + nodeInfoList)</span>
+   <span class="arrow">→</span> <span class="detail">获取 taskId</span>
+   <span class="arrow">→</span> <span class="detail">如果 code=421 (队列满)，重试</span>
+
+<span class="step">4. _poll_task_result(apiKey, taskId, outputPath)</span>
+   <span class="arrow">→</span> <span class="detail">循环轮询：</span>
+     <span class="detail">a. query_task_status(taskId, apiKey)</span>
+        <span class="arrow">→</span> <span class="path">POST /task/openapi/status</span>  <span class="detail">(apiKey + taskId)</span>
+        <span class="arrow">→</span> <span class="detail">检测是否包含 APIKEY_TASK_NOT_FOUND</span>
+     <span class="detail">b. query_task_outputs(taskId, apiKey)</span>
+        <span class="arrow">→</span> <span class="path">POST /task/openapi/outputs</span>  <span class="detail">(apiKey + taskId)</span>
+        <span class="arrow">→</span> <span class="detail">code=0: 从 data[0].fileUrl 下载结果</span>
+        <span class="arrow">→</span> <span class="detail">code=805: 任务失败，抛出 TaskPollError</span>
+   <span class="arrow">→</span> <span class="detail">超时: 600秒</span>
+
+<span class="step">5. cancel_task(taskId, apiKey)</span>
+   <span class="arrow">→</span> <span class="path">POST /task/openapi/cancel</span>  <span class="detail">(apiKey + taskId)</span></div>
+
+<!-- 9. 环境变量 -->
+<h2><span class="num">9</span>环境变量汇总</h2>
+
+<div class="env-grid">
+  <div class="header">变量</div><div class="header">默认值</div><div class="header">说明</div>
+  <div class="cell"><code>RUNNINGHUB_API_BASE</code></div><div class="cell"><code>https://www.runninghub.cn</code></div><div class="cell">API 根地址</div>
+  <div class="cell"><code>RUNNINGHUB_API_KEY</code></div><div class="cell">无</div><div class="cell">API 密钥（也可通过 input_params 传入）</div>
+  <div class="cell"><code>RUNNINGHUB_MAX_SLOTS</code></div><div class="cell"><code>3</code></div><div class="cell">并发槽位数</div>
+  <div class="cell"><code>RUNNINGHUB_QUEUE_RETRY</code></div><div class="cell"><code>60</code></div><div class="cell">队列满时最大重试次数</div>
+  <div class="cell"><code>RUNNINGHUB_QUEUE_RETRY_INTERVAL</code></div><div class="cell"><code>5</code></div><div class="cell">队列满重试间隔（秒）</div>
+</div>
+
+<!-- 10. 响应码 -->
+<h2><span class="num">10</span>关键响应码汇总</h2>
+
+<div class="code-codes">
+  <div class="header">code</div><div class="header">含义</div><div class="header">处理方式</div>
+  <div class="cell"><span class="badge badge-green">0</span></div><div class="cell">成功</div><div class="cell">正常解析 data</div>
+  <div class="cell"><span class="badge badge-yellow">421</span></div><div class="cell">队列满</div><div class="cell">重试（msg="TASK_QUEUE_MAXED"）</div>
+  <div class="cell"><span class="badge badge-red">805</span></div><div class="cell">任务失败</div><div class="cell">抛出 TaskPollError，读取 data.failedReason</div>
+  <div class="cell"><span class="badge badge-orange">含 APIKEY_TASK_NOT_FOUND</span></div><div class="cell">任务不存在/被远程取消</div><div class="cell">抛出 TaskPollError(status="cancelled")</div>
+</div>
+
+</div>
+</body>
+</html>
