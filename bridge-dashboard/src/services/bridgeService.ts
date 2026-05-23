@@ -215,6 +215,23 @@ export const bridgeTaskService = {
   },
 };
 
+export type UserSettings = {
+  enableShadow: boolean;
+  inpaintCount: number;
+};
+
+export const bridgeSettingsService = {
+  getSettings: async (): Promise<UserSettings> => {
+    const response = await bridgeApi.get('/api/v1/user-settings');
+    return response.data as UserSettings;
+  },
+
+  updateSettings: async (settings: Partial<UserSettings>): Promise<UserSettings> => {
+    const response = await bridgeApi.put('/api/v1/user-settings', settings);
+    return response.data as UserSettings;
+  },
+};
+
 export const bridgeSystemService = {
   getSystemStatus: async () => {
     try {
@@ -239,8 +256,10 @@ export const bridgeSystemService = {
 };
 
 export const bridgeUserService = {
-  getUsers: async (roleName?: string) => {
-    const params = roleName ? { roleName } : {};
+  getUsers: async (roleName?: string, departmentId?: string) => {
+    const params: Record<string, string> = {};
+    if (roleName) params.roleName = roleName;
+    if (departmentId) params.departmentId = departmentId;
     try {
       const response = await bridgeApi.get('/api/v1/upm/users', { params });
       return response.data;

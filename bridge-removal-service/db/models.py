@@ -21,6 +21,7 @@ class ProjectModel(db.Model):
     department_name = db.Column(db.String(256))
     project_leader_id = db.Column(db.String(64))
     assignee_id = db.Column(db.String(64))
+    assignee_name = db.Column(db.String(128))
     created_by_name = db.Column(db.String(128))
     created_department_id = db.Column(db.String(64))
     created_department_name = db.Column(db.String(256))
@@ -67,6 +68,7 @@ class SessionModel(db.Model):
     email = db.Column(db.String(256))
     roles = db.Column(db.Text)
     sso_session_id = db.Column(db.String(128))
+    upm_token = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     expires_at = db.Column(db.DateTime)
 

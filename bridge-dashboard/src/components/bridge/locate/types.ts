@@ -27,6 +27,10 @@ export type LocateItem = {
   resultPath?: string;
   resultFileUrl?: string;
   resultReadable?: boolean;
+  resultConfirmed?: boolean;
+  hasUnconfirmedBatch?: boolean;
+  batchPaths?: string[];
+  batchFileUrl?: string;
   inpaintJobId?: string;
   kind?: 'segment' | 'segment_result' | 'merged_result';
   maskSamPath?: string;

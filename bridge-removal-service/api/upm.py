@@ -30,7 +30,6 @@ def _get_upm_service_token():
     if _upm_service_token and datetime.utcnow().timestamp() * 1000 < _upm_service_token_expires:
         return _upm_service_token
     if not UPM_SERVICE_USERNAME or not UPM_SERVICE_PASSWORD:
-        _upm_available = False
         return None
     try:
         headers = {"Content-Type": "application/json"}
@@ -55,20 +54,41 @@ def _get_upm_service_token():
         return None
 
 
-def _check_upm_available():
-    global _upm_available
+def _upm_headers():
+    headers = {}
+    user_info = getattr(request, "current_user", None)
+    user_upm_token = user_info.get("upm_token") if isinstance(user_info, dict) else None
+    token = user_upm_token or _get_upm_service_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    if UPM_INTERNAL_API_KEY:
+        headers["X-Internal-Api-Key"] = UPM_INTERNAL_API_KEY
+    return headers
+
+
+def _upm_available_check():
+    headers = {}
     token = _get_upm_service_token()
-    if not token:
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    if UPM_INTERNAL_API_KEY:
+        headers["X-Internal-Api-Key"] = UPM_INTERNAL_API_KEY
+    if not headers:
         return False
     try:
         resp = requests.get(
             f"{UPM_BASE_URL}/api/users?size=1",
-            headers={"Authorization": f"Bearer {token}"},
+            headers=headers,
             timeout=5,
         )
-        _upm_available = resp.status_code == 200
+        return resp.status_code == 200
     except Exception:
-        _upm_available = False
+        return False
+
+
+def _check_upm_available():
+    global _upm_available
+    _upm_available = _upm_available_check()
     return _upm_available
 
 
@@ -76,30 +96,37 @@ def _check_upm_available():
 @require_local_auth
 def upm_proxy_users():
     role_name = request.args.get("roleName", "")
-    token = _get_upm_service_token()
-    if not token:
+    department_id = request.args.get("departmentId", "")
+    headers = _upm_headers()
+    if not headers:
         return api_error("upm_unavailable", "UPM service is not available", 503)
     try:
         if role_name:
             resp = requests.get(
                 f"{UPM_BASE_URL}/api/users/search",
                 params={"roleName": role_name, "isActive": "true"},
-                headers={"Authorization": f"Bearer {token}"},
+                headers=headers,
                 timeout=10,
             )
         else:
             resp = requests.get(
                 f"{UPM_BASE_URL}/api/users",
                 params={"size": "100"},
-                headers={"Authorization": f"Bearer {token}"},
+                headers=headers,
                 timeout=10,
             )
-        if resp.status_code == 200:
-            return api_ok(resp.json())
-        if resp.status_code == 403:
-            global _upm_service_token
-            _upm_service_token = None
-        return api_error("upm_error", f"UPM returned {resp.status_code}", 502)
+        if resp.status_code != 200:
+            if resp.status_code == 403:
+                global _upm_service_token
+                _upm_service_token = None
+            return api_error("upm_error", f"UPM returned {resp.status_code}", 502)
+        users = resp.json()
+        for u in users:
+            if "id" in u and "userId" not in u:
+                u["userId"] = u["id"]
+        if department_id:
+            users = [u for u in users if u.get("department_id") == department_id or u.get("departmentId") == department_id]
+        return api_ok(users)
     except requests.RequestException as e:
         logger.warning("UPM proxy users failed: %s", e)
         return api_error("upm_unavailable", "UPM service is not available", 503)
@@ -108,13 +135,13 @@ def upm_proxy_users():
 @upm_bp.route("/departments", methods=["GET"])
 @require_local_auth
 def upm_proxy_departments():
-    token = _get_upm_service_token()
-    if not token:
+    headers = _upm_headers()
+    if not headers:
         return api_error("upm_unavailable", "UPM service is not available", 503)
     try:
         resp = requests.get(
             f"{UPM_BASE_URL}/api/departments",
-            headers={"Authorization": f"Bearer {token}"},
+            headers=headers,
             timeout=10,
         )
         if resp.status_code == 200:

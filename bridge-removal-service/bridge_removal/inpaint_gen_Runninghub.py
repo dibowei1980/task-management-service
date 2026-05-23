@@ -1,5 +1,5 @@
-import http.client
 import json
+import os
 import sys
 import time
 import requests
@@ -14,127 +14,84 @@ def _get_api_base():
     base = os.getenv("RUNNINGHUB_API_BASE", "").strip()
     return base if base else _DEFAULT_API_BASE
 
-def _parse_api_base(base):
-    if base.startswith("https://"):
-        scheme = "https"
-        host = base[len("https://"):].rstrip("/")
-    elif base.startswith("http://"):
-        scheme = "http"
-        host = base[len("http://"):].rstrip("/")
-    else:
-        scheme = "https"
-        host = base.rstrip("/")
-    return scheme, host
-
-def _make_connection(host, scheme="https"):
-    if scheme == "https":
-        return http.client.HTTPSConnection(host)
-    return http.client.HTTPConnection(host)
-
 def _make_url(base, path):
     return f"{base.rstrip('/')}/{path.lstrip('/')}"
 def get_nodo(webappId,Api_Key):
-    scheme, host = _parse_api_base(_get_api_base())
-    conn = _make_connection(host, scheme)
-    payload = ''
-    headers = {'Host': host}
-    conn.request("GET", f"/api/webapp/apiCallDemo?apiKey={Api_Key}&webappId={webappId}", payload, headers)
-    res = conn.getresponse()
-    # 读取响应内容
-    data = res.read()
-    # 转成 Python 字典
-    data_json = json.loads(data.decode("utf-8"))
-    # 取出 nodeInfoList
+    base = _get_api_base()
+    url = _make_url(base, f"/api/webapp/apiCallDemo?apiKey={Api_Key}&webappId={webappId}")
+    response = requests.get(url)
+    if response.status_code != 200:
+        raise RuntimeError(f"get_nodo HTTP {response.status_code}: {response.text[:500]!r}")
+    if not response.text or not response.text.strip():
+        raise RuntimeError(f"get_nodo 返回空响应 (status={response.status_code}, url={url})")
+    data_json = response.json()
     node_info_list = data_json.get("data", {}).get("nodeInfoList", [])
     print("✅ 提取的 nodeInfoList:")
     print(json.dumps(node_info_list, indent=2, ensure_ascii=False))
     return node_info_list
 def upload_file(API_KEY, file_path):
-    """
-    上传文件到 RunningHub 平台
-    """
     base = _get_api_base()
-    scheme, host = _parse_api_base(base)
     url = _make_url(base, "/task/openapi/upload")
-    headers = {
-        'Host': host
-    }
     data = {
         'apiKey': API_KEY,
         'fileType': 'input'
     }
     with open(file_path, 'rb') as f:
         files = {'file': f}
-        response = requests.post(url, headers=headers, files=files, data=data)
+        response = requests.post(url, files=files, data=data)
     return response.json()
 # 1️⃣ 提交任务
 def submit_task(webapp_id, node_info_list,API_KEY):
-    scheme, host = _parse_api_base(_get_api_base())
-    conn = _make_connection(host, scheme)
+    base = _get_api_base()
+    url = _make_url(base, "/task/openapi/ai-app/run")
     payload = json.dumps({
         "webappId": webapp_id,
         "apiKey": API_KEY,
-        # "quickCreateCode": quick_create_code,
         "nodeInfoList": node_info_list
     })
     headers = {
-        'Host': host,
         'Content-Type': 'application/json'
     }
-    conn.request("POST", "/task/openapi/ai-app/run", payload, headers)
-    res = conn.getresponse()
-    data = json.loads(res.read().decode("utf-8"))
-    conn.close()
-    return data
+    response = requests.post(url, headers=headers, data=payload)
+    return response.json()
 def query_task_outputs(task_id,API_KEY):
-    scheme, host = _parse_api_base(_get_api_base())
-    conn = _make_connection(host, scheme)
+    base = _get_api_base()
+    url = _make_url(base, "/task/openapi/outputs")
     payload = json.dumps({
         "apiKey": API_KEY,
         "taskId": task_id
     })
     headers = {
-        'Host': host,
         'Content-Type': 'application/json'
     }
-    conn.request("POST", "/task/openapi/outputs", payload, headers)
-    res = conn.getresponse()
-    data = json.loads(res.read().decode("utf-8"))
-    conn.close()
-    return data
+    response = requests.post(url, headers=headers, data=payload)
+    return response.json()
 
 def query_task_status(task_id, API_KEY):
-    scheme, host = _parse_api_base(_get_api_base())
-    conn = _make_connection(host, scheme)
+    base = _get_api_base()
+    url = _make_url(base, "/task/openapi/status")
     payload = json.dumps({
         "apiKey": API_KEY,
         "taskId": task_id
     })
     headers = {
-        'Host': host,
         'Content-Type': 'application/json'
     }
-    conn.request("POST", "/task/openapi/status", payload, headers)
-    res = conn.getresponse()
-    data = json.loads(res.read().decode("utf-8"))
-    conn.close()
-    return data
+    response = requests.post(url, headers=headers, data=payload)
+    return response.json()
 
 def cancel_task(task_id, API_KEY):
-    scheme, host = _parse_api_base(_get_api_base())
-    conn = _make_connection(host, scheme)
+    base = _get_api_base()
+    url = _make_url(base, "/task/openapi/cancel")
     payload = json.dumps({
         "apiKey": API_KEY,
         "taskId": task_id
     })
     headers = {
-        'Host': host,
         'Content-Type': 'application/json'
     }
-    conn.request("POST", "/task/openapi/cancel", payload, headers)
-    data = json.loads(conn.getresponse().read().decode("utf-8"))
-    conn.close()
-    return data
+    response = requests.post(url, headers=headers, data=payload)
+    return response.json()
 
 class TaskPollError(Exception):
     def __init__(self, task_id, status, reason, source=None):
@@ -168,6 +125,34 @@ def _resolve_download_url(file_url, api_key):
     url = f"{url}{sep}apiKey={api_key}"
     return url
 
+def _detect_image_ext(content: bytes) -> str:
+    if content[:8] == b'\x89PNG\r\n\x1a\n':
+        return ".png"
+    if content[:2] in (b'II', b'MM'):
+        return ".tif"
+    if content[:3] == b'\xff\xd8\xff':
+        return ".jpg"
+    if content[:4] == b'RIFF' and content[8:12] == b'WEBP':
+        return ".webp"
+    return ""
+
+def _save_with_correct_ext(output_path: str, content: bytes) -> str:
+    actual_ext = _detect_image_ext(content)
+    base, orig_ext = os.path.splitext(output_path)
+    if actual_ext and actual_ext.lower() != orig_ext.lower():
+        corrected = base + actual_ext
+        with open(corrected, "wb") as f:
+            f.write(content)
+        try:
+            if os.path.isfile(output_path):
+                os.remove(output_path)
+        except OSError:
+            pass
+        return corrected
+    with open(output_path, "wb") as f:
+        f.write(content)
+    return output_path
+
 def _poll_task_result(api_key, task_id, output_path, timeout=600, poll_interval=5):
     start_time = time.time()
     last_error = None
@@ -200,9 +185,9 @@ def _poll_task_result(api_key, task_id, output_path, timeout=600, poll_interval=
                         download_url = _resolve_download_url(file_url, api_key)
                         response = requests.get(download_url, timeout=60)
                         response.raise_for_status()
-                        with open(output_path, "wb") as f:
-                            f.write(response.content)
-                        return output_path
+                        content = response.content
+                        actual_path = _save_with_correct_ext(output_path, content)
+                        return actual_path
                     except Exception as e:
                         last_error = str(e)
             if code == 805:
@@ -440,7 +425,7 @@ def clear_pool_and_cancel_runninghub_tasks(api_key, job_id=None):
     return results
 
 def qwen_bridge_removal(api_key, original_image_path, removal_mask_path, crop_mask_path, output_path, seed="",  job_id=""):
-    webapp_id = "2029163935819108353"
+    webapp_id = os.getenv("RUNNINGHUB_WEBAPP_ID", "2029163935819108353").strip()
     node_info_list = get_nodo(webapp_id, api_key)
     if not node_info_list:
         raise RuntimeError("无法获取节点信息")

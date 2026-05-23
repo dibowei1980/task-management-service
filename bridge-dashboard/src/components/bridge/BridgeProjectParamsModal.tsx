@@ -110,6 +110,8 @@ export const BridgeProjectParamsModal: React.FC<Props> = ({ project, onClose, on
       const payload: Partial<BridgeTask> = {};
       if (canEditProjectLeader) {
         payload.projectLeaderId = projectLeaderId ? projectLeaderId : null;
+        const selectedManager = projectManagers.find(u => u.userId === projectLeaderId);
+        payload.assigneeName = selectedManager ? selectedManager.username : (projectLeaderId ? projectLeaderId : null);
       }
 
       if (!paramLocked) {

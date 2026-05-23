@@ -17,7 +17,7 @@ from services.project_service import (
     get_project, project_to_task_response, find_project_by_task_id,
     update_project_fields,
 )
-from services.job_service import create_job_record, update_job_status, find_latest_job_by_task
+from services.job_service import create_job_record, update_job_status, find_latest_job_by_task, find_jobs_by_project
 from services.callback_service import callback_task_status
 from services.status_mapping import to_platform_status
 
@@ -248,7 +248,7 @@ def update_task(task_id: str):
     body = get_validated_body()
     updatable_fields = [
         "name", "task_name", "status", "priority", "assignee_id",
-        "project_leader_id", "department_id", "department_name",
+        "assignee_name", "project_leader_id", "department_id", "department_name",
         "operator_ids", "inspector_ids", "progress", "output_results",
         "created_by_name", "created_department_id", "created_department_name",
         "external_system", "external_task_id", "external_url",
@@ -484,6 +484,19 @@ def preprocess_segments(task_id: str):
         manifest_steps = manifest.get("steps")
 
     segments = []
+
+    inpaint_job_map: dict[str, str] = {}
+    for j in find_jobs_by_project(project.get("project_id") or project.get("id") or ""):
+        if j.get("task_type") != "INPAINT_START":
+            continue
+        job_results = j.get("results") or {}
+        job_artifacts = job_results.get("artifacts") if isinstance(job_results, dict) else {}
+        seg_json = job_artifacts.get("segment_json_path", "") if isinstance(job_artifacts, dict) else ""
+        if seg_json:
+            seg_file_name = seg_json.replace("\\", "/").rsplit("/", 1)[-1] if "/" in seg_json.replace("\\", "/") else seg_json
+            seg_name = os.path.splitext(seg_file_name)[0]
+            inpaint_job_map[seg_name] = j.get("job_id", "")
+
     if os.path.exists(segments_dir):
         json_files = sorted(f for f in os.listdir(segments_dir) if f.endswith(".json"))
         for jf in json_files:
@@ -598,6 +611,7 @@ def preprocess_segments(task_id: str):
                 "width": img_info.get("width", 256),
                 "height": img_info.get("height", 256),
                 "tfw": tfw,
+                "worldFilePath": pgw_path if os.path.exists(pgw_path) else "",
                 "bridgePolygonPx": bridge_polygon_px,
                 "centerlinePx": centerline_px,
                 "centerPointPx": center_point_px,
@@ -614,13 +628,106 @@ def preprocess_segments(task_id: str):
             if not os.path.exists(mask_path):
                 mask_filename = img_filename.replace(".png", "_mask.png").replace(".tif", "_mask.png").replace(".tiff", "_mask.png")
                 mask_path = os.path.join(segments_dir, mask_filename)
-            if os.path.exists(mask_path):
+
+            seg_base_name = os.path.splitext(jf)[0]
+            masks_dir = os.path.join(task_dir, "masks", seg_base_name)
+
+            confirmed_path = ""
+            for ext in (".tif", ".png", ".tiff", ".jpg"):
+                candidate = os.path.join(masks_dir, f"{seg_base_name}_inpainted_patch{ext}")
+                if os.path.isfile(candidate):
+                    confirmed_path = candidate
+                    break
+
+            batch_dir = os.path.join(masks_dir, f"{seg_base_name}_batch")
+            batch_paths = []
+            if os.path.isdir(batch_dir):
+                for bf in sorted(os.listdir(batch_dir)):
+                    if bf.lower().endswith((".png", ".tif", ".tiff", ".jpg")):
+                        batch_paths.append(os.path.join(batch_dir, bf))
+
+            if confirmed_path:
+                seg_item["resultPath"] = confirmed_path
+                seg_item["resultFileUrl"] = f"/api/v1/tasks/{task_id}/preprocess-file?path={urllib.parse.quote(confirmed_path, safe='')}"
+                seg_item["inpaintStatus"] = "confirmed"
+                seg_item["resultReadable"] = True
+                seg_item["resultConfirmed"] = True
+
+            if batch_paths:
+                seg_item["batchPaths"] = batch_paths
+                seg_item["batchFileUrl"] = f"/api/v1/tasks/{task_id}/preprocess-file?path={urllib.parse.quote(batch_paths[0], safe='')}"
+                if not confirmed_path:
+                    seg_item["inpaintStatus"] = "completed"
+                    seg_item["resultReadable"] = True
+                seg_item["hasUnconfirmedBatch"] = True
+
+            if not confirmed_path and not batch_paths and os.path.exists(mask_path):
                 seg_item["resultPath"] = mask_path
                 seg_item["resultFileUrl"] = f"/api/v1/tasks/{task_id}/preprocess-file?path={urllib.parse.quote(mask_path, safe='')}"
+                seg_item["resultReadable"] = True
+
+            if seg_base_name in inpaint_job_map:
+                seg_item["inpaintJobId"] = inpaint_job_map[seg_base_name]
 
             segments.append(seg_item)
 
     all_segment_results_ready = all(s.get("resultFileUrl") for s in segments) if segments else False
+
+    merged_result_dir = task_dir
+    if os.path.isdir(merged_result_dir):
+        for mf in sorted(os.listdir(merged_result_dir)):
+            if "_merged." in mf and mf.lower().endswith((".png", ".tif", ".tiff", ".jpg")):
+                merged_path = os.path.join(merged_result_dir, mf)
+                if os.path.isfile(merged_path):
+                    merged_world_file = ""
+                    merged_base = os.path.splitext(merged_path)[0]
+                    for wf_ext in (".pgw", ".tfw", ".jgw"):
+                        wf_candidate = merged_base + wf_ext
+                        if os.path.isfile(wf_candidate):
+                            merged_world_file = wf_candidate
+                            break
+                    merged_tfw = None
+                    if merged_world_file and os.path.isfile(merged_world_file):
+                        try:
+                            with open(merged_world_file, "r", encoding="utf-8") as wf_r:
+                                wf_lines = wf_r.read().strip().splitlines()
+                            if len(wf_lines) >= 6:
+                                merged_tfw = {
+                                    "a": float(wf_lines[0].strip()),
+                                    "d": float(wf_lines[1].strip()),
+                                    "b": float(wf_lines[2].strip()),
+                                    "e": float(wf_lines[3].strip()),
+                                    "c": float(wf_lines[4].strip()),
+                                    "f": float(wf_lines[5].strip()),
+                                }
+                        except Exception as wf_err:
+                            logger.warning("Failed to parse world file for merged result %s: %s", mf, wf_err)
+                    merged_width = 512
+                    merged_height = 512
+                    try:
+                        from services.shp_utils import get_image_size
+                        w, h = get_image_size(merged_path)
+                        if w and h:
+                            merged_width = w
+                            merged_height = h
+                    except Exception:
+                        pass
+                    segments.append({
+                        "path": merged_path,
+                        "imagePath": merged_path,
+                        "worldFilePath": merged_world_file,
+                        "fileUrl": f"/api/v1/tasks/{task_id}/preprocess-file?path={urllib.parse.quote(merged_path, safe='')}",
+                        "width": merged_width,
+                        "height": merged_height,
+                        "tfw": merged_tfw,
+                        "resultPath": merged_path,
+                        "resultFileUrl": f"/api/v1/tasks/{task_id}/preprocess-file?path={urllib.parse.quote(merged_path, safe='')}",
+                        "resultReadable": True,
+                        "resultConfirmed": True,
+                        "segmentId": mf,
+                        "kind": "merged_result",
+                        "inpaintStatus": "confirmed",
+                    })
 
     return api_ok({
         "task_id": task_id,
@@ -677,24 +784,27 @@ def api_preprocess_generate(task_id: str):
 
     job_id = create_job_record(task_id, "PREPROCESS_GENERATE", input_params)
 
+    app = current_app._get_current_object()
+
     def _run():
-        try:
-            update_job_status(job_id, "IN_PROGRESS")
-            task = BridgeRemovalUnitProcessorTask(task_id=task_id, input_params=input_params)
-            api_url = os.getenv("TASK_MANAGEMENT_API_URL", "")
-            auth_token = os.getenv("AUTH_TOKEN", "")
-            headers = {"Authorization": f"Bearer {auth_token}", "Content-Type": "application/json"} if auth_token else {}
-            result = task.preprocess_segmentation(
-                api_url=api_url,
-                headers=headers,
-                intermediate_root=input_params.get("intermediate_root"),
-                overwrite=overwrite,
-                param_overrides={"preprocess_max_side_px": max_side_px},
-            )
-            results = {"task_id": task_id, "preprocess_completed": result}
-            update_job_status(job_id, "COMPLETED", results=results)
-        except Exception as e:
-            update_job_status(job_id, "FAILED", error=str(e))
+        with app.app_context():
+            try:
+                update_job_status(job_id, "IN_PROGRESS")
+                task = BridgeRemovalUnitProcessorTask(task_id=task_id, input_params=input_params)
+                api_url = os.getenv("TASK_MANAGEMENT_API_URL", "")
+                auth_token = os.getenv("AUTH_TOKEN", "")
+                headers = {"Authorization": f"Bearer {auth_token}", "Content-Type": "application/json"} if auth_token else {}
+                result = task.preprocess_segmentation(
+                    api_url=api_url,
+                    headers=headers,
+                    intermediate_root=input_params.get("intermediate_root"),
+                    overwrite=overwrite,
+                    param_overrides={"preprocess_max_side_px": max_side_px},
+                )
+                results = {"task_id": task_id, "preprocess_completed": result}
+                update_job_status(job_id, "COMPLETED", results=results)
+            except Exception as e:
+                update_job_status(job_id, "FAILED", error=str(e))
 
     threading.Thread(target=_run, daemon=True).start()
     return api_accepted({"job_id": job_id, "status": "STARTED"})
@@ -886,36 +996,47 @@ def mask_generate(task_id: str):
 @validate_body(MaskSaveBody)
 def mask_save(task_id: str):
     body = get_validated_body()
-    mask_data = body.get("mask_data")
-    segment_name = body.get("segment_name", "")
+    segment_json_path = body.get("segment_json_path", "")
+    mask_png_base64 = body.get("mask_png_base64", "")
+    mask_cut_png_base64 = body.get("mask_cut_png_base64", "")
 
     project = find_project_by_task_id(task_id)
     if not project:
         return api_error("not_found", "Task not found", 404)
 
-    input_params = project.get("input_params") or {}
-    intermediate_path = _resolve_intermediate_path(project, input_params)
-    mask_dir = os.path.join(intermediate_path, "masks")
-    os.makedirs(mask_dir, exist_ok=True)
+    if not segment_json_path:
+        return api_error("validation_error", "segment_json_path is required", 400)
 
-    mask_filename = f"{segment_name}_mask.png" if segment_name else "edited_mask.png"
-    mask_path = os.path.join(mask_dir, mask_filename)
+    normalized = segment_json_path.replace("\\", "/")
+    last_slash = normalized.rfind("/")
+    if last_slash < 0:
+        return api_error("validation_error", "Invalid segment_json_path format", 400)
+
+    seg_dir = normalized[:last_slash]
+    mask_dir = re.sub(r"/segments$", "/masks", seg_dir, flags=re.IGNORECASE)
+    base_name = os.path.splitext(os.path.basename(normalized))[0]
+    seg_mask_dir = os.path.join(mask_dir, base_name)
+    os.makedirs(seg_mask_dir, exist_ok=True)
+
+    mask_path = os.path.join(seg_mask_dir, f"{base_name}_mask_with_shadow.png")
+    mask_cut_path = os.path.join(seg_mask_dir, f"{base_name}_mask_cut_with_shadow.png")
 
     try:
-        import numpy as np
-        import cv2
-        if isinstance(mask_data, list):
-            arr = np.array(mask_data, dtype=np.uint8)
-            cv2.imwrite(mask_path, arr)
-        elif isinstance(mask_data, str):
-            import base64
-            img_bytes = base64.b64decode(mask_data)
-            with open(mask_path, "wb") as f:
-                f.write(img_bytes)
-        else:
-            return api_error("validation_error", "Invalid mask_data format", 400)
+        import base64 as b64mod
 
-        return api_ok({"task_id": task_id, "mask_path": mask_path, "saved": True})
+        img_bytes = b64mod.b64decode(mask_png_base64)
+        with open(mask_path, "wb") as f:
+            f.write(img_bytes)
+
+        if mask_cut_png_base64:
+            cut_bytes = b64mod.b64decode(mask_cut_png_base64)
+            with open(mask_cut_path, "wb") as f:
+                f.write(cut_bytes)
+
+        result = {"task_id": task_id, "mask_path": mask_path, "saved": True}
+        if mask_cut_png_base64:
+            result["mask_cut_path"] = mask_cut_path
+        return api_ok(result)
     except Exception as e:
         logger.exception("mask_save failed: %s", e)
         return api_error("mask_save_failed", "Failed to save mask", 500)
@@ -928,6 +1049,7 @@ def mask_save(task_id: str):
 def inpaint_start(task_id: str):
     body = get_validated_body()
     input_params = body.get("input_params") or {}
+    inpaint_count = body.get("count", 1)
 
     project = find_project_by_task_id(task_id)
     if not project:
@@ -945,6 +1067,9 @@ def inpaint_start(task_id: str):
     image_path = body.get("image_path", "")
     removal_mask_path = body.get("removal_mask_path", "")
     crop_mask_path = body.get("crop_mask_path", "")
+    previous_result_path = body.get("previous_result_path", "")
+    previous_world_file_path = body.get("previous_world_file_path", "")
+    current_world_file_path = body.get("current_world_file_path", "")
 
     if not image_path:
         image_path = merged_params.get("image_path", "")
@@ -957,6 +1082,18 @@ def inpaint_start(task_id: str):
 
     intermediate_path = _resolve_intermediate_path(project, merged_params)
     os.makedirs(intermediate_path, exist_ok=True)
+
+    seg_base_name = ""
+    if segment_json_path:
+        normalized_seg = segment_json_path.replace("\\", "/")
+        seg_file_name = normalized_seg.rsplit("/", 1)[-1] if "/" in normalized_seg else normalized_seg
+        seg_base_name = os.path.splitext(seg_file_name)[0]
+
+    if seg_base_name:
+        seg_mask_dir = os.path.join(intermediate_path, "masks", seg_base_name)
+        os.makedirs(seg_mask_dir, exist_ok=True)
+    else:
+        seg_mask_dir = intermediate_path
 
     api_key = merged_params.get("runninghub_api_key", "") or os.getenv("RUNNINGHUB_API_KEY", "")
     if not api_key:
@@ -973,36 +1110,97 @@ def inpaint_start(task_id: str):
 
     job_id = create_job_record(task_id, "INPAINT_START", input_params)
 
+    from bridge_removal.inpaint_gen_Runninghub import qwen_bridge_removal, TaskPollError, run_batch_with_pool, _aggregate_batch_results
+    app = current_app._get_current_object()
+
     def _run():
-        try:
-            update_job_status(job_id, "IN_PROGRESS")
-            from bridge_removal.inpaint_gen_Runninghub import qwen_bridge_removal, TaskPollError
-            output_path = os.path.join(intermediate_path, "inpainted_patch.tif")
-            result_path = qwen_bridge_removal(
-                api_key, image_path, removal_mask_path, crop_mask_path, output_path, seed=seed, job_id=job_id
-            )
-            result = {
-                "step": {"name": "inpaint_fill", "status": "completed"},
-                "artifacts": {
-                    "inpainted_patch_path": result_path,
-                    "segment_json_path": segment_json_path,
-                    "image_path": image_path,
-                    "removal_mask_path": removal_mask_path,
-                    "crop_mask_path": crop_mask_path,
+        with app.app_context():
+            overlap_temp_files = []
+            effective_image_path = image_path
+            effective_removal_mask_path = removal_mask_path
+            effective_crop_mask_path = crop_mask_path
+            try:
+                update_job_status(job_id, "IN_PROGRESS")
+                if previous_result_path and previous_world_file_path and current_world_file_path:
+                    missing_files = []
+                    if not os.path.isfile(previous_result_path):
+                        missing_files.append(f"前段成果影像({previous_result_path})")
+                    if not os.path.isfile(previous_world_file_path):
+                        missing_files.append(f"前段world file({previous_world_file_path})")
+                    if not os.path.isfile(current_world_file_path):
+                        missing_files.append(f"当前段world file({current_world_file_path})")
+                    if missing_files:
+                        raise RuntimeError(f"前段成果叠加失败：文件不存在 - {', '.join(missing_files)}")
+                    try:
+                        from bridge_removal.overlap_fix import run as overlap_fix_run
+                        overlap_payload = {
+                            "previous_result_path": previous_result_path,
+                            "previous_world_file_path": previous_world_file_path,
+                            "current_image_path": image_path,
+                            "current_world_file_path": current_world_file_path,
+                            "mask1_path": removal_mask_path,
+                            "mask2_path": crop_mask_path,
+                        }
+                        exit_code, overlap_result = overlap_fix_run(overlap_payload)
+                        if exit_code == 0 and overlap_result.get("status") == "ok":
+                            effective_image_path = overlap_result.get("temp_image_path", image_path)
+                            effective_removal_mask_path = overlap_result.get("temp_mask1_path", removal_mask_path)
+                            effective_crop_mask_path = overlap_result.get("temp_mask2_path", crop_mask_path)
+                            overlap_temp_files = overlap_result.get("generated_temp_files", [])
+                            logger.info("Overlap fix applied for segment %s: %d overlap pixels", seg_base_name, overlap_result.get("overlap_pixel_count", 0))
+                        else:
+                            raise RuntimeError(f"前段成果叠加失败：{overlap_result.get('code', 'UNKNOWN')} - {overlap_result.get('message', '未知原因')}")
+                    except RuntimeError:
+                        raise
+                    except Exception as ofe:
+                        raise RuntimeError(f"前段成果叠加失败：{ofe}") from ofe
+                batch_dir = os.path.join(seg_mask_dir, f"{seg_base_name}_batch")
+                if os.path.isdir(batch_dir):
+                    import shutil
+                    shutil.rmtree(batch_dir, ignore_errors=True)
+                os.makedirs(batch_dir, exist_ok=True)
+                args_list = []
+                for i in range(1, inpaint_count + 1):
+                    out_path = os.path.join(batch_dir, f"{i}.png")
+                    args_list.append((api_key, effective_image_path, effective_removal_mask_path, effective_crop_mask_path, out_path, seed, job_id))
+                results, errors = run_batch_with_pool(qwen_bridge_removal, args_list)
+                batch_id = job_id or str(uuid.uuid4())
+                success, payload = _aggregate_batch_results(batch_id, results, errors)
+                output_paths = [r for r in results if r]
+                result = {
+                    "step": {"name": "inpaint_fill", "status": "completed" if success else "partial"},
+                    "artifacts": {
+                        "output_paths": output_paths,
+                        "segment_json_path": segment_json_path,
+                        "image_path": image_path,
+                        "removal_mask_path": removal_mask_path,
+                        "crop_mask_path": crop_mask_path,
+                    }
                 }
-            }
-            update_job_status(job_id, "COMPLETED", results=result)
-        except TaskPollError as e:
-            error_result = {
-                "step": {"name": "inpaint_fill", "status": "failed"},
-                "error": e.reason,
-                "error_code": "CANCELLED" if e.status == "cancelled" else "TASK_FAILED",
-                "task_id": e.task_id or "",
-            }
-            update_job_status(job_id, "FAILED", error=str(e.reason), results=error_result)
-        except Exception as e:
-            logger.exception("Inpaint failed for task %s", task_id)
-            update_job_status(job_id, "FAILED", error=str(e))
+                if not success:
+                    update_job_status(job_id, "FAILED", error=str(payload.get("error_message", "BATCH_ALL_FAILED")), results=result)
+                    return
+                if errors and any(e is not None for e in errors):
+                    result["step"]["status"] = "partial"
+                update_job_status(job_id, "COMPLETED", results=result)
+            except TaskPollError as e:
+                error_result = {
+                    "step": {"name": "inpaint_fill", "status": "failed"},
+                    "error": e.reason,
+                    "error_code": "CANCELLED" if e.status == "cancelled" else "TASK_FAILED",
+                    "task_id": e.task_id or "",
+                }
+                update_job_status(job_id, "FAILED", error=str(e.reason), results=error_result)
+            except Exception as e:
+                logger.exception("Inpaint failed for task %s", task_id)
+                update_job_status(job_id, "FAILED", error=str(e))
+            finally:
+                for tmp in overlap_temp_files:
+                    try:
+                        if os.path.exists(tmp):
+                            os.remove(tmp)
+                    except Exception:
+                        pass
 
     threading.Thread(target=_run, daemon=True).start()
     return api_accepted({"job_id": job_id, "status": "STARTED"})
@@ -1014,7 +1212,22 @@ def inpaint_status(task_id: str):
     job = find_latest_job_by_task(task_id, "INPAINT_START")
     if not job:
         return api_ok({"task_id": task_id, "status": "NOT_STARTED"})
-    return api_ok({"task_id": task_id, "job_id": job["job_id"], "status": job["status"], "results": job.get("results")})
+    status = job["status"]
+    results = job.get("results") or {}
+    artifacts = results.get("artifacts") if isinstance(results, dict) else {}
+    batch_output_paths = artifacts.get("output_paths", []) if isinstance(artifacts, dict) else []
+    image_path = artifacts.get("image_path", "") if isinstance(artifacts, dict) else ""
+    response = {
+        "task_id": task_id,
+        "job_id": job["job_id"],
+        "status": status,
+        "results": results,
+        "outputPaths": batch_output_paths,
+        "imagePath": image_path,
+        "originalImagePath": image_path,
+        "error": job.get("error"),
+    }
+    return api_ok(response)
 
 
 @tasks_bp.route("/<task_id>/inpaint-cancel", methods=["POST"])
@@ -1058,27 +1271,115 @@ def inpaint_retry(task_id: str):
 @tasks_bp.route("/<task_id>/inpaint-result", methods=["POST"])
 @require_local_auth
 @require_permission("task:execute")
-@validate_body(InpaintResultBody)
 def inpaint_result(task_id: str):
-    body = get_validated_body()
-    selected_index = body.get("selected_index", 0)
+    job_id = request.args.get("jobId", "").strip()
+    selected_index = int(request.args.get("index", "0"))
 
     project = find_project_by_task_id(task_id)
     if not project:
         return api_error("not_found", "Task not found", 404)
 
-    input_params = project.get("input_params") or {}
-    intermediate_path = _resolve_intermediate_path(project, input_params)
-    inpainted_path = os.path.join(intermediate_path, "inpainted_patch.tif")
+    job = None
+    if job_id:
+        from services.job_service import get_job
+        job = get_job(job_id)
+    if not job:
+        job = find_latest_job_by_task(task_id, "INPAINT_START")
 
-    if not os.path.exists(inpainted_path):
+    output_paths = []
+    if job:
+        results = job.get("results") or {}
+        artifacts = results.get("artifacts") if isinstance(results, dict) else {}
+        output_paths = artifacts.get("output_paths", []) if isinstance(artifacts, dict) else []
+
+    chosen_path = ""
+    if output_paths and 0 <= selected_index < len(output_paths):
+        chosen_path = output_paths[selected_index]
+
+    if not chosen_path or not os.path.isfile(chosen_path):
         return api_error("not_found", "Inpaint result not found", 404)
+
+    seg_base_name = ""
+    segment_json_path = ""
+    if job:
+        results = job.get("results") or {}
+        artifacts = results.get("artifacts") if isinstance(results, dict) else {}
+        segment_json_path = artifacts.get("segment_json_path", "") if isinstance(artifacts, dict) else ""
+        if segment_json_path:
+            normalized_seg = segment_json_path.replace("\\", "/")
+            seg_file_name = normalized_seg.rsplit("/", 1)[-1] if "/" in normalized_seg else normalized_seg
+            seg_base_name = os.path.splitext(seg_file_name)[0]
+
+    confirmed_path = ""
+    if seg_base_name:
+        input_params = project.get("input_params") or {}
+        intermediate_path = _resolve_intermediate_path(project, input_params)
+        seg_mask_dir = os.path.join(intermediate_path, "masks", seg_base_name)
+        os.makedirs(seg_mask_dir, exist_ok=True)
+        _, src_ext = os.path.splitext(chosen_path)
+        if not src_ext:
+            src_ext = ".png"
+        confirmed_path = os.path.join(seg_mask_dir, f"{seg_base_name}_inpainted_patch{src_ext}")
+        if chosen_path != confirmed_path:
+            import shutil
+            shutil.copy2(chosen_path, confirmed_path)
+
+        segments_dir = os.path.join(intermediate_path, "segments")
+        src_world_file = ""
+        for wf_ext in (".pgw", ".tfw", ".jgw"):
+            wf_candidate = os.path.join(segments_dir, seg_base_name + wf_ext)
+            if os.path.isfile(wf_candidate):
+                src_world_file = wf_candidate
+                break
+        if src_world_file and os.path.isfile(confirmed_path):
+            try:
+                import cv2 as _cv2
+                src_img = _cv2.imread(confirmed_path, _cv2.IMREAD_UNCHANGED)
+                result_h, result_w = src_img.shape[:2] if src_img is not None else (0, 0)
+            except Exception:
+                result_w, result_h = 0, 0
+            try:
+                with open(src_world_file, "r", encoding="utf-8") as wf:
+                    wf_lines = wf.read().strip().splitlines()
+                if len(wf_lines) >= 6:
+                    a = float(wf_lines[0].strip())
+                    b = float(wf_lines[1].strip())
+                    c = float(wf_lines[2].strip())
+                    d = float(wf_lines[3].strip())
+                    e = float(wf_lines[4].strip())
+                    f_val = float(wf_lines[5].strip())
+                    if result_w > 0 and result_h > 0:
+                        seg_img_path = ""
+                        for ext in (".tif", ".png", ".tiff", ".jpg"):
+                            candidate = os.path.join(segments_dir, seg_base_name + ext)
+                            if os.path.isfile(candidate):
+                                seg_img_path = candidate
+                                break
+                        if seg_img_path:
+                            try:
+                                orig_img = _cv2.imread(seg_img_path, _cv2.IMREAD_UNCHANGED)
+                                orig_h, orig_w = orig_img.shape[:2] if orig_img is not None else (0, 0)
+                            except Exception:
+                                orig_w, orig_h = 0, 0
+                            if orig_w > 0 and orig_h > 0 and (orig_w != result_w or orig_h != result_h):
+                                scale_x = result_w / orig_w
+                                scale_y = result_h / orig_h
+                                a = a * scale_x
+                                d = d * scale_x
+                                b = b * scale_y
+                                e = e * scale_y
+                    dst_wf_ext = ".pgw" if src_ext.lower() in (".png",) else ".tfw"
+                    dst_world_file = os.path.join(seg_mask_dir, f"{seg_base_name}_inpainted_patch{dst_wf_ext}")
+                    with open(dst_world_file, "w", encoding="utf-8") as wf_out:
+                        wf_out.write(f"{a:.12f}\n{d:.12f}\n{b:.12f}\n{e:.12f}\n{c:.12f}\n{f_val:.12f}\n")
+            except Exception as wf_err:
+                logger.warning("Failed to copy/adjust world file for %s: %s", seg_base_name, wf_err)
 
     return api_ok({
         "task_id": task_id,
         "selected_index": selected_index,
-        "result_path": inpainted_path,
-        "status": "SELECTED",
+        "result_path": confirmed_path or chosen_path,
+        "status": "succeeded",
     })
 
 
@@ -1090,14 +1391,25 @@ def inpaint_file(task_id: str):
     if not project:
         return api_error("not_found", "Task not found", 404)
 
+    file_path = request.args.get("path", "").strip()
+    if file_path and os.path.isfile(file_path):
+        mime = "image/tiff" if file_path.lower().endswith((".tif", ".tiff")) else "image/png"
+        return send_file(file_path, mimetype=mime)
+
     input_params = project.get("input_params") or {}
     intermediate_path = _resolve_intermediate_path(project, input_params)
-    inpainted_path = os.path.join(intermediate_path, "inpainted_patch.tif")
+    inpainted_path = ""
+    for ext in (".tif", ".png", ".tiff", ".jpg"):
+        candidate = os.path.join(intermediate_path, f"inpainted_patch{ext}")
+        if os.path.isfile(candidate):
+            inpainted_path = candidate
+            break
 
-    if not os.path.exists(inpainted_path):
+    if not inpainted_path:
         return api_error("not_found", "Inpaint file not found", 404)
 
-    return send_file(inpainted_path, mimetype="image/tiff")
+    mime = "image/tiff" if inpainted_path.lower().endswith((".tif", ".tiff")) else "image/png"
+    return send_file(inpainted_path, mimetype=mime)
 
 
 @tasks_bp.route("/<task_id>/merge-results", methods=["POST"])
@@ -1106,24 +1418,148 @@ def inpaint_file(task_id: str):
 @validate_body(MergeResultsBody)
 def merge_results(task_id: str):
     body = get_validated_body()
+    overwrite = body.get("overwrite", False)
     input_params = body.get("input_params", {})
 
     project = find_project_by_task_id(task_id)
     if not project:
         return api_error("not_found", "Task not found", 404)
 
-    job_id = create_job_record(task_id, "MERGE_RESULTS", input_params)
+    merged_params = {**(project.get("input_params") or {}), **input_params}
+    intermediate_path = _resolve_intermediate_path(project, merged_params)
+    masks_dir = os.path.join(intermediate_path, "masks")
 
-    def _run():
-        try:
-            update_job_status(job_id, "IN_PROGRESS")
-            result = run_write_back_to_dom(task_id, input_params or project.get("input_params") or {})
-            update_job_status(job_id, "COMPLETED", results=result)
-            update_project_fields(project["project_id"], {"status": "COMPLETED"})
-            callback_task_status(task_id, "COMPLETED", results=result)
-        except Exception as e:
-            update_job_status(job_id, "FAILED", error=str(e))
-            callback_task_status(task_id, "FAILED")
+    if not os.path.isdir(masks_dir):
+        return api_error("no_segments", "No segment data found", 400)
 
-    threading.Thread(target=_run, daemon=True).start()
-    return api_accepted({"job_id": job_id, "status": "STARTED"})
+    segment_result_paths = []
+    segment_world_file_paths = []
+    seg_dirs = sorted([
+        d for d in os.listdir(masks_dir)
+        if os.path.isdir(os.path.join(masks_dir, d))
+    ])
+
+    for seg_name in seg_dirs:
+        seg_dir = os.path.join(masks_dir, seg_name)
+        confirmed_path = ""
+        for ext in (".tif", ".png", ".tiff", ".jpg"):
+            candidate = os.path.join(seg_dir, f"{seg_name}_inpainted_patch{ext}")
+            if os.path.isfile(candidate):
+                confirmed_path = candidate
+                break
+        if not confirmed_path:
+            return api_error(
+                "missing_result",
+                f"Segment '{seg_name}' has no confirmed result. Please confirm all segment results before merging.",
+                400,
+            )
+        segment_result_paths.append(confirmed_path)
+
+        world_file_path = ""
+        for wf_ext in (".pgw", ".tfw", ".jgw"):
+            wf_candidate = os.path.join(seg_dir, f"{seg_name}_inpainted_patch{wf_ext}")
+            if os.path.isfile(wf_candidate):
+                world_file_path = wf_candidate
+                break
+        if not world_file_path:
+            img_base = os.path.splitext(confirmed_path)[0]
+            for wf_ext in (".pgw", ".tfw", ".jgw"):
+                wf_candidate = img_base + wf_ext
+                if os.path.isfile(wf_candidate):
+                    world_file_path = wf_candidate
+                    break
+        if not world_file_path:
+            segments_dir = os.path.join(intermediate_path, "segments")
+            for wf_ext in (".pgw", ".tfw", ".jgw"):
+                wf_candidate = os.path.join(segments_dir, seg_name + wf_ext)
+                if os.path.isfile(wf_candidate):
+                    src_wf = wf_candidate
+                    try:
+                        with open(src_wf, "r", encoding="utf-8") as wf_r:
+                            wf_lines = wf_r.read().strip().splitlines()
+                        if len(wf_lines) >= 6:
+                            a = float(wf_lines[0].strip())
+                            d_val = float(wf_lines[1].strip())
+                            b = float(wf_lines[2].strip())
+                            e = float(wf_lines[3].strip())
+                            c = float(wf_lines[4].strip())
+                            f_val = float(wf_lines[5].strip())
+                            try:
+                                import cv2 as _cv2
+                                result_img = _cv2.imread(confirmed_path, _cv2.IMREAD_UNCHANGED)
+                                result_h, result_w = result_img.shape[:2] if result_img is not None else (0, 0)
+                            except Exception:
+                                result_w, result_h = 0, 0
+                            if result_w > 0 and result_h > 0:
+                                seg_img_path = ""
+                                for ext in (".tif", ".png", ".tiff", ".jpg"):
+                                    candidate = os.path.join(segments_dir, seg_name + ext)
+                                    if os.path.isfile(candidate):
+                                        seg_img_path = candidate
+                                        break
+                                if seg_img_path:
+                                    try:
+                                        orig_img = _cv2.imread(seg_img_path, _cv2.IMREAD_UNCHANGED)
+                                        orig_h, orig_w = orig_img.shape[:2] if orig_img is not None else (0, 0)
+                                    except Exception:
+                                        orig_w, orig_h = 0, 0
+                                    if orig_w > 0 and orig_h > 0 and (orig_w != result_w or orig_h != result_h):
+                                        scale_x = result_w / orig_w
+                                        scale_y = result_h / orig_h
+                                        a = a * scale_x
+                                        d_val = d_val * scale_x
+                                        b = b * scale_y
+                                        e = e * scale_y
+                            _, result_ext = os.path.splitext(confirmed_path)
+                            dst_wf_ext = ".pgw" if result_ext.lower() in (".png",) else ".tfw"
+                            dst_wf = os.path.join(seg_dir, f"{seg_name}_inpainted_patch{dst_wf_ext}")
+                            with open(dst_wf, "w", encoding="utf-8") as wf_w:
+                                wf_w.write(f"{a:.12f}\n{d_val:.12f}\n{b:.12f}\n{e:.12f}\n{c:.12f}\n{f_val:.12f}\n")
+                            world_file_path = dst_wf
+                    except Exception as wf_err:
+                        logger.warning("Failed to generate world file from source for %s: %s", seg_name, wf_err)
+                    break
+        if not world_file_path:
+            return api_error(
+                "missing_world_file",
+                f"Segment '{seg_name}' has no world file. Cannot merge without coordinate information.",
+                400,
+            )
+        segment_world_file_paths.append(world_file_path)
+
+    output_filename = f"{os.path.basename(intermediate_path)}_merged.png"
+    output_path = os.path.join(intermediate_path, output_filename)
+
+    if os.path.isfile(output_path) and not overwrite:
+        return api_ok({
+            "status": "need_confirm",
+            "message": "合并成果已存在，确认覆盖后继续合并？",
+            "output_path": output_path,
+        })
+
+    try:
+        from bridge_removal.merge_results import run as merge_run
+        payload = {
+            "output_path": output_path,
+            "segment_result_paths": segment_result_paths,
+            "segment_world_file_paths": segment_world_file_paths,
+        }
+        exit_code, result = merge_run(payload)
+        if exit_code != 0:
+            err_msg = result.get("message", "合并失败")
+            err_code = result.get("code", "MERGE_FAILED")
+            if result.get("missing_segments"):
+                err_msg = f"缺失分段成果文件: {', '.join(result['missing_segments'])}"
+            if result.get("traceback"):
+                logger.error("Merge failed for task %s:\n%s", task_id, result["traceback"])
+            return api_error(err_code, err_msg, 500)
+
+        result["status"] = "succeeded"
+        result["outputPath"] = result.pop("output_path", output_path)
+        if "output_world_file_path" in result:
+            result["outputWorldFilePath"] = result.pop("output_world_file_path")
+        return api_ok(result)
+
+    except Exception as e:
+        logger.error("Merge failed for task %s: %s", task_id, traceback.format_exc())
+        return api_error("merge_failed", str(e), 500)

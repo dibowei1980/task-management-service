@@ -68,6 +68,8 @@ def _sam2_available() -> bool:
 
 
 def _safe_imwrite(path: str, img: np.ndarray) -> bool:
+    if img.ndim == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     try:
         success = cv2.imwrite(path, img)
     except Exception as e:
@@ -78,7 +80,7 @@ def _safe_imwrite(path: str, img: np.ndarray) -> bool:
         try:
             from PIL import Image
             if img.ndim == 2:
-                pil_img = Image.fromarray(img)
+                pil_img = Image.fromarray(img).convert("RGB")
             elif img.shape[2] == 4:
                 pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGRA2RGBA))
             elif img.shape[2] == 3:

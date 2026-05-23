@@ -103,34 +103,31 @@ class PreprocessGenerateBody(BaseModel):
 class MaskGenerateBatchItem(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    segment_json_path: str = Field(alias="segmentJsonPath", default="", max_length=512)
-    segment_name: str = Field(alias="segmentName", default="", max_length=128)
+    segment_json_path: str = Field(alias="segment_json_path", default="", max_length=512)
+    segment_name: str = Field(alias="segment_name", default="", max_length=128)
 
 
 class MaskGenerateBody(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     input_params: Optional[Dict[str, Any]] = Field(alias="inputParams", default=None)
-    segment_name: str = Field(alias="segmentName", default="", max_length=128)
-    segment_json_path: str = Field(alias="segmentJsonPath", default="", max_length=512)
+    segment_name: str = Field(alias="segment_name", default="", max_length=128)
+    segment_json_path: str = Field(alias="segment_json_path", default="", max_length=512)
     batch: Optional[List[MaskGenerateBatchItem]] = Field(default=None)
 
 
 class MaskSaveBody(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    mask_data: Optional[Union[List[Any], str]] = Field(alias="maskData", default=None)
-    segment_name: str = Field(alias="segmentName", default="", max_length=128)
+    segment_json_path: str = Field(alias="segment_json_path", default="", max_length=512)
+    mask_png_base64: str = Field(alias="mask_png_base64", default="")
+    mask_cut_png_base64: str = Field(alias="mask_cut_png_base64", default="")
 
-    @field_validator("mask_data")
+    @field_validator("mask_png_base64")
     @classmethod
-    def validate_mask_data(cls, v):
-        if v is None:
-            raise ValueError("mask_data is required")
-        if isinstance(v, list) and len(v) == 0:
-            raise ValueError("mask_data array must not be empty")
-        if isinstance(v, str) and len(v) == 0:
-            raise ValueError("mask_data string must not be empty")
+    def validate_mask_png_base64(cls, v):
+        if not v:
+            raise ValueError("mask_png_base64 is required")
         return v
 
 
@@ -138,10 +135,14 @@ class InpaintStartBody(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     input_params: Optional[Dict[str, Any]] = Field(alias="inputParams", default=None)
-    segment_json_path: str = Field(alias="segmentJsonPath", default="", max_length=512)
-    image_path: str = Field(alias="imagePath", default="", max_length=512)
-    removal_mask_path: str = Field(alias="removalMaskPath", default="", max_length=512)
-    crop_mask_path: str = Field(alias="cropMaskPath", default="", max_length=512)
+    segment_json_path: str = Field(alias="segment_json_path", default="", max_length=512)
+    image_path: str = Field(alias="image_path", default="", max_length=512)
+    removal_mask_path: str = Field(alias="removal_mask_path", default="", max_length=512)
+    crop_mask_path: str = Field(alias="crop_mask_path", default="", max_length=512)
+    count: int = Field(default=1, ge=1, le=8)
+    previous_result_path: str = Field(alias="previous_result_path", default="", max_length=1024)
+    previous_world_file_path: str = Field(alias="previous_world_file_path", default="", max_length=1024)
+    current_world_file_path: str = Field(alias="current_world_file_path", default="", max_length=1024)
 
 
 class InpaintResultBody(BaseModel):
@@ -154,6 +155,7 @@ class MergeResultsBody(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     input_params: Optional[Dict[str, Any]] = Field(alias="inputParams", default=None)
+    overwrite: Optional[bool] = Field(default=False)
 
 
 class SimulateBody(BaseModel):

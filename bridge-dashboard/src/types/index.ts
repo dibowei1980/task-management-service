@@ -27,11 +27,13 @@ export interface BridgeTask {
   status: string;
   priority: number;
   assigneeId: string | null;
+  assigneeName?: string | null;
   projectLeaderId?: string | null;
   operatorIds?: string[];
   inspectorIds?: string[];
   projectId?: string | null;
   departmentId?: string;
+  departmentName?: string;
   createdByName?: string | null;
   createdDepartmentId?: string | null;
   createdDepartmentName?: string | null;

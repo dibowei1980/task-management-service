@@ -7,7 +7,10 @@ import traceback
 import cv2
 import numpy as np
 
-from dom_mosaic import ImageTile
+try:
+    from .dom_mosaic import ImageTile
+except ImportError:
+    from dom_mosaic import ImageTile
 
 
 def _read_payload_arg(arg: str) -> dict:

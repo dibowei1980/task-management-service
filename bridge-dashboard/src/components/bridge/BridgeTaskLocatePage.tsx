@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { bridgeApi } from '../../utils/api';
-import { bridgeTaskService } from '../../services/bridgeService';
+import { bridgeTaskService, bridgeSettingsService } from '../../services/bridgeService';
 import type { MaskSavePayload } from '../../types/api';
 import { logger } from '../../utils/logger';
 import { toast } from '../common/Toast';
@@ -35,6 +35,9 @@ export const BridgeTaskLocatePage: React.FC = () => {
   const [, setMaskGenerateError] = useState<string | null>(null);
   const [, setMaskGenerateSuccess] = useState<string | null>(null);
   const [enableShadow, setEnableShadow] = useState(false);
+  const [inpaintCount, setInpaintCount] = useState(1);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [runStatus, setRunStatus] = useState<string | null>(null);
   const [inpaintRunning, setInpaintRunning] = useState(false);
   const [inpaintJobId, setInpaintJobId] = useState<string | null>(null);
@@ -90,6 +93,30 @@ export const BridgeTaskLocatePage: React.FC = () => {
   const [worldBounds, setWorldBounds] = useState<{ minX: number; minY: number; maxX: number; maxY: number } | null>(null);
 
   const viewerRef = useRef<HTMLDivElement | null>(null);
+  const viewerRefCallback = useCallback((node: HTMLDivElement | null) => {
+    viewerRef.current = node;
+    if (!node) return;
+    const handler = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = node.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      setView(v => {
+        const scale0 = v.scale;
+        const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+        const scale1 = clamp(scale0 * factor, 1e-9, 1e12);
+        const worldX = (mx - v.offsetX) / scale0;
+        const worldY = -(my - v.offsetY) / scale0;
+        const offsetX = mx - worldX * scale1;
+        const offsetY = my + worldY * scale1;
+        return { scale: scale1, offsetX, offsetY };
+      });
+    };
+    node.addEventListener('wheel', handler, { passive: false });
+    return () => {
+      node.removeEventListener('wheel', handler);
+    };
+  }, []);
   const baseCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const maskCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -117,10 +144,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
   const canUseMergedSwipe = useMemo(() => viewMode === 'merged_result' && segmentItems.length > 0, [viewMode, segmentItems]);
   const allSegmentResultsReady = useMemo(() => {
     if (!segmentItems.length) return false;
-    return segmentItems.every(item => {
-      if (!item.resultPath || !item.resultFileUrl) return false;
-      return item.resultReadable !== false;
-    });
+    return segmentItems.every(item => !!item.resultConfirmed);
   }, [segmentItems]);
   const segmentOrderIndexMap = useMemo(() => {
     const map = new Map<string, number>();
@@ -141,6 +165,20 @@ export const BridgeTaskLocatePage: React.FC = () => {
   useEffect(() => {
     if (editByQuery) setEditMask(true);
   }, [editByQuery]);
+
+  useEffect(() => {
+    if (settingsLoaded) return;
+    let disposed = false;
+    bridgeSettingsService.getSettings().then(s => {
+      if (disposed) return;
+      if (typeof s.enableShadow === 'boolean') setEnableShadow(s.enableShadow);
+      if (typeof s.inpaintCount === 'number' && s.inpaintCount >= 1 && s.inpaintCount <= 8) setInpaintCount(s.inpaintCount);
+      setSettingsLoaded(true);
+    }).catch(() => {
+      setSettingsLoaded(true);
+    });
+    return () => { disposed = true; };
+  }, [settingsLoaded]);
 
   useEffect(() => {
     if (!displayMenuOpen) return;
@@ -220,7 +258,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
       const expanded: LocateItem[] = [];
       list.forEach(item => {
         expanded.push({ ...item, kind: item.kind || 'segment' });
-        if (item.resultFileUrl) {
+        if (item.kind !== 'merged_result' && item.resultFileUrl && item.resultConfirmed) {
           expanded.push({
             ...item,
             kind: 'segment_result',
@@ -378,10 +416,12 @@ export const BridgeTaskLocatePage: React.FC = () => {
     if (!data || typeof data !== 'object') return;
     const payload = data as Record<string, unknown>;
     const statusRaw = typeof payload.status === 'string' ? payload.status : '';
-    const status = statusRaw || 'pending';
-    setInpaintStatusCode(status);
+    const statusLower = statusRaw.toLowerCase();
+    setInpaintStatusCode(statusLower);
     if (typeof payload.jobId === 'string' && payload.jobId) {
       setInpaintJobId(payload.jobId);
+    } else if (typeof payload.job_id === 'string' && payload.job_id) {
+      setInpaintJobId(payload.job_id);
     }
     const outputList = Array.isArray(payload.outputPaths)
       ? payload.outputPaths.filter((v): v is string => typeof v === 'string' && v.length > 0)
@@ -389,7 +429,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
     const outputPath = typeof payload.outputPath === 'string' ? payload.outputPath : '';
     const nextOutputs = outputList.length ? outputList : (outputPath ? [outputPath] : []);
     setInpaintOutputPaths(nextOutputs);
-    const pending = status === 'pending';
+    const pending = statusLower === 'pending' || statusLower === 'in_progress';
     setInpaintRunning(pending);
     const payloadImagePath = typeof payload.originalImagePath === 'string'
       ? payload.originalImagePath
@@ -416,26 +456,27 @@ export const BridgeTaskLocatePage: React.FC = () => {
       setRunStatus(error);
       return;
     }
-    if (status === 'succeeded') {
+    if (statusLower === 'succeeded' || statusLower === 'completed') {
       const message = '生成完成';
       setInpaintStatus(message);
       setRunStatus(message);
+      reloadSegments().catch(() => undefined);
       return;
     }
-    if (status === 'failed') {
+    if (statusLower === 'failed') {
       const message = '生成失败';
       setInpaintStatus(message);
       setRunStatus(message);
       return;
     }
-    if (status) {
-      const message = `生成状态：${status}`;
+    if (statusLower) {
+      const message = `生成状态：${statusRaw}`;
       setInpaintStatus(message);
       setRunStatus(message);
     } else {
       setInpaintStatus(null);
     }
-  }, []);
+  }, [reloadSegments]);
 
   const cancelInpaint = useCallback(async () => {
     if (!taskId) return;
@@ -539,8 +580,8 @@ export const BridgeTaskLocatePage: React.FC = () => {
         if (disposed) return;
         updateInpaintState(res);
         const payload = res as Record<string, unknown> | null;
-        const status = payload && typeof payload.status === 'string' ? payload.status : '';
-        if (status === 'pending') {
+        const status = payload && typeof payload.status === 'string' ? payload.status.toLowerCase() : '';
+        if (status === 'pending' || status === 'in_progress') {
           timer = window.setTimeout(poll, 3000);
         }
       } catch {
@@ -841,7 +882,8 @@ export const BridgeTaskLocatePage: React.FC = () => {
       setRunStatus(message);
       setMaskReloadKey(v => v + 1);
     } catch (e) {
-      const msg = (e && typeof e === 'object' && 'message' in e) ? String((e as { message?: unknown }).message) : '保存掩膜失败';
+      const errObj = e as { userMessage?: string; message?: unknown };
+      const msg = errObj.userMessage || (typeof errObj.message === 'string' ? errObj.message : '');
       const message = msg || '保存掩膜失败';
       setMaskSaveError(message);
       setRunStatus(message);
@@ -884,6 +926,9 @@ export const BridgeTaskLocatePage: React.FC = () => {
       segment_json_path: target.jsonPath,
       image_path: target.path,
     };
+    if (inpaintCount > 1) {
+      payload.count = String(inpaintCount);
+    }
     const maskPath = buildMaskPath(target.jsonPath, target.path, target);
     if (maskPath) {
       payload.removal_mask_path = maskPath;
@@ -891,6 +936,11 @@ export const BridgeTaskLocatePage: React.FC = () => {
     const maskCutPath = buildMaskCutPath(target.jsonPath, target.path, target);
     if (maskCutPath) {
       payload.crop_mask_path = maskCutPath;
+    }
+    if (previousSegment?.resultPath && previousSegment?.worldFilePath && target.worldFilePath) {
+      payload.previous_result_path = previousSegment.resultPath;
+      payload.previous_world_file_path = previousSegment.worldFilePath;
+      payload.current_world_file_path = target.worldFilePath;
     }
     setInpaintError(null);
     setInpaintStatus('生成提交中...');
@@ -903,7 +953,8 @@ export const BridgeTaskLocatePage: React.FC = () => {
       const res = await bridgeTaskService.startInpaint(taskId, payload);
       updateInpaintState(res);
     } catch (e) {
-      const msg = (e && typeof e === 'object' && 'message' in e) ? String((e as { message?: unknown }).message) : '生成启动失败';
+      const errObj = e as { userMessage?: string; message?: unknown };
+      const msg = errObj.userMessage || (typeof errObj.message === 'string' ? errObj.message : '');
       const message = msg || '生成启动失败';
       setInpaintError(message);
       setRunStatus(message);
@@ -912,7 +963,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
       setInpaintStatus(null);
       setInpaintStatusCode(null);
     }
-  }, [taskId, viewMode, selected, maskDirty, triggerMaskSave, updateInpaintState, segmentOrderIndexMap, segmentItems]);
+  }, [taskId, viewMode, selected, maskDirty, triggerMaskSave, updateInpaintState, segmentOrderIndexMap, segmentItems, inpaintCount]);
 
   const handleShowMaskToggle = useCallback(async (next: boolean) => {
     if (next) {
@@ -1326,12 +1377,19 @@ export const BridgeTaskLocatePage: React.FC = () => {
         let bitmap: ImageBitmap;
         let width = item.width || 512;
         let height = item.height || 512;
-        if (isTiffPath(item.path) || contentType.includes('tif') || contentType.includes('tiff')) {
-          const raster = await decodeTiffToRgba(buf);
-          if (disposed) return;
-          width = raster.width;
-          height = raster.height;
-          bitmap = await createBitmapFromRgba(raster);
+        const looksLikeTiff = isTiffPath(item.path) || contentType.includes('tif') || contentType.includes('tiff');
+        if (looksLikeTiff) {
+          try {
+            const raster = await decodeTiffToRgba(buf);
+            if (disposed) return;
+            width = raster.width;
+            height = raster.height;
+            bitmap = await createBitmapFromRgba(raster);
+          } catch {
+            bitmap = await createBitmapFromImageBuffer(buf, contentType || 'image/png');
+            width = bitmap.width || width;
+            height = bitmap.height || height;
+          }
         } else {
           bitmap = await createBitmapFromImageBuffer(buf, contentType);
           width = bitmap.width || width;
@@ -1373,12 +1431,19 @@ export const BridgeTaskLocatePage: React.FC = () => {
         let bitmap: ImageBitmap;
         let width = item.width || 512;
         let height = item.height || 512;
-        if (isTiffPath(item.path) || contentType.includes('tif') || contentType.includes('tiff')) {
-          const raster = await decodeTiffToRgba(buf);
-          if (disposed) return;
-          width = raster.width;
-          height = raster.height;
-          bitmap = await createBitmapFromRgba(raster);
+        const looksLikeTiff = isTiffPath(item.path) || contentType.includes('tif') || contentType.includes('tiff');
+        if (looksLikeTiff) {
+          try {
+            const raster = await decodeTiffToRgba(buf);
+            if (disposed) return;
+            width = raster.width;
+            height = raster.height;
+            bitmap = await createBitmapFromRgba(raster);
+          } catch {
+            bitmap = await createBitmapFromImageBuffer(buf, contentType || 'image/png');
+            width = bitmap.width || width;
+            height = bitmap.height || height;
+          }
         } else {
           bitmap = await createBitmapFromImageBuffer(buf, contentType);
           width = bitmap.width || width;
@@ -1586,6 +1651,67 @@ export const BridgeTaskLocatePage: React.FC = () => {
         }
       }
 
+      const drawPolyWorldCoords = (worldPts: Array<[number, number]>, color: string, lineWidth: number, dash?: number[]) => {
+        if (worldPts.length < 2) return;
+        octx.beginPath();
+        const first = worldPts[0];
+        octx.moveTo(first[0] * scale + offsetX, -first[1] * scale + offsetY);
+        for (let i = 1; i < worldPts.length; i++) {
+          octx.lineTo(worldPts[i][0] * scale + offsetX, -worldPts[i][1] * scale + offsetY);
+        }
+        octx.strokeStyle = color;
+        octx.lineWidth = lineWidth;
+        if (dash && dash.length) {
+          octx.setLineDash(dash);
+        } else {
+          octx.setLineDash([]);
+        }
+        octx.stroke();
+      };
+
+      const drawPointWorldCoords = (worldPt: [number, number], color: string, radius: number) => {
+        const x = worldPt[0] * scale + offsetX;
+        const y = -worldPt[1] * scale + offsetY;
+        octx.beginPath();
+        octx.arc(x, y, radius, 0, Math.PI * 2);
+        octx.fillStyle = color;
+        octx.fill();
+      };
+
+      if (viewMode === 'merged_result') {
+        for (const seg of segmentItems) {
+          if (!seg.tfw) continue;
+          if (showBridgeRange && Array.isArray(seg.bridgePolygonPx)) {
+            const worldPts: Array<[number, number]> = [];
+            for (const p of seg.bridgePolygonPx) {
+              const wp = pixelToWorld(seg.tfw, p);
+              if (wp) worldPts.push(wp);
+            }
+            drawPolyWorldCoords(worldPts, '#2563eb', 3);
+          }
+          if (showCenterline && Array.isArray(seg.centerlinePx)) {
+            const worldPts: Array<[number, number]> = [];
+            for (const p of seg.centerlinePx) {
+              const wp = pixelToWorld(seg.tfw, p);
+              if (wp) worldPts.push(wp);
+            }
+            drawPolyWorldCoords(worldPts, '#ef4444', 3);
+          }
+          if (showCenterline && seg.centerPointPx) {
+            const wp = pixelToWorld(seg.tfw, seg.centerPointPx);
+            if (wp) drawPointWorldCoords(wp, '#ef4444', 4);
+          }
+          if (showImpactRange && Array.isArray(seg.impactPolygonPx)) {
+            const worldPts: Array<[number, number]> = [];
+            for (const p of seg.impactPolygonPx) {
+              const wp = pixelToWorld(seg.tfw, p);
+              if (wp) worldPts.push(wp);
+            }
+            drawPolyWorldCoords(worldPts, '#2563eb', 2, [6, 4]);
+          }
+        }
+      }
+
       for (let i = 0; i < tiles.length; i += 1) {
         const t = tiles[i];
         if (t.status !== 'loaded' || !t.item.tfw) continue;
@@ -1726,7 +1852,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
     };
 
     draw();
-  }, [tiles, compareTiles, mergedSwipeEnabled, mergedSwipeRatio, view, showBridgeRange, showImpactRange, showCenterline, viewMode, domIndex, showMask, maskOverlayBitmap, selected, isEditingMask, polygonPoints, polygonHover]);
+  }, [tiles, compareTiles, mergedSwipeEnabled, mergedSwipeRatio, view, showBridgeRange, showImpactRange, showCenterline, viewMode, domIndex, showMask, maskOverlayBitmap, selected, isEditingMask, polygonPoints, polygonHover, segmentItems]);
 
   const headerTitle = useMemo(() => {
     if (taskName) return taskName;
@@ -1784,15 +1910,13 @@ export const BridgeTaskLocatePage: React.FC = () => {
               掩膜编辑
             </button>
           )}
-          <label className="flex items-center gap-1 px-2 py-2 text-sm cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={enableShadow}
-              onChange={e => setEnableShadow(e.target.checked)}
-              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-            />
-            阴影识别
-          </label>
+          <button
+            className="px-3 py-2 text-sm border rounded bg-white hover:bg-gray-50"
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+          >
+            ⚙ 设置
+          </button>
           <div className="relative" ref={displayMenuRef}>
             <button
               className="list-none cursor-pointer px-3 py-2 text-sm border rounded bg-white"
@@ -1844,16 +1968,6 @@ export const BridgeTaskLocatePage: React.FC = () => {
               取消生成
             </button>
           )}
-          {editByQuery && viewMode === 'segment_result' && (
-            <button
-              className="px-3 py-2 text-sm border rounded disabled:opacity-50 disabled:cursor-not-allowed"
-              onClick={() => { void mergeAllResults(); }}
-              disabled={!allSegmentResultsReady || mergeRunning || !taskId}
-              title={!allSegmentResultsReady ? '存在缺失分段成果，无法合并' : (mergeRunning ? '合并中...' : '所有成果影像合并')}
-            >
-              {mergeRunning ? '合并中...' : '所有成果影像合并'}
-            </button>
-          )}
         </div>
       </div>
 
@@ -1900,6 +2014,18 @@ export const BridgeTaskLocatePage: React.FC = () => {
                 </div>
               )}
             </div>
+            {editByQuery && viewMode === 'segment_result' && (
+              <div className="px-3 py-2 border-b">
+                <button
+                  className="w-full px-3 py-2 text-sm border rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-500"
+                  onClick={() => { void mergeAllResults(); }}
+                  disabled={!allSegmentResultsReady || mergeRunning || !taskId}
+                  title={!allSegmentResultsReady ? '存在缺失分段成果，无法合并' : (mergeRunning ? '合并中...' : '所有成果影像合并')}
+                >
+                  {mergeRunning ? '合并中...' : '所有成果影像合并'}
+                </button>
+              </div>
+            )}
             <div className="max-h-[70vh] overflow-auto">
               {items.map((d, idx) => (
                 <button
@@ -1919,12 +2045,12 @@ export const BridgeTaskLocatePage: React.FC = () => {
                     <div className="absolute right-2 top-2 flex items-center gap-2">
                       {(() => {
                         const previousSegment = idx > 0 ? segmentItems[idx - 1] : null;
-                        const previousConfirmed = !previousSegment || !!(previousSegment.resultPath || previousSegment.resultFileUrl);
+                        const previousConfirmed = !previousSegment || !!previousSegment.resultConfirmed;
                         const runningCurrentItem = normalizePath(inpaintRunningPath) === normalizePath(d.path);
                         const inpaintDisabled = !taskId || (inpaintRunning && !runningCurrentItem) || !previousConfirmed;
                         const inpaintTitle = !previousConfirmed ? '请先完成上一分段确认' : (inpaintRunning ? '取消生成' : '生成影像');
                         const segmentResultJobId = d.inpaintJobId || null;
-                        const resultSelectDisabled = !taskId || !segmentResultJobId || d.resultReadable !== true;
+                        const resultSelectDisabled = !taskId || !segmentResultJobId || d.hasUnconfirmedBatch !== true;
                         const resultSelectTitle = resultSelectDisabled ? '该分段暂无可选择影像结果' : '结果选择';
                         return (
                           <>
@@ -2057,6 +2183,63 @@ export const BridgeTaskLocatePage: React.FC = () => {
             />
           )}
 
+          {settingsOpen && (
+            <div className="fixed inset-0 z-[20000] flex items-center justify-center bg-black/30" onClick={() => setSettingsOpen(false)}>
+              <div className="w-full max-w-md rounded-lg bg-white shadow-xl" onClick={e => e.stopPropagation()}>
+                <div className="flex items-center justify-between border-b px-5 py-3">
+                  <h3 className="text-base font-semibold text-gray-800">生成设置</h3>
+                  <button className="text-gray-400 hover:text-gray-600 text-lg leading-none" onClick={() => setSettingsOpen(false)}>✕</button>
+                </div>
+                <div className="px-5 py-4 space-y-5">
+                  <label className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-medium text-gray-700">阴影识别</div>
+                      <div className="text-xs text-gray-500">掩膜生成时检测桥梁周围阴影区域并合并</div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={enableShadow}
+                      onChange={e => setEnableShadow(e.target.checked)}
+                      className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                  </label>
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <div>
+                        <div className="text-sm font-medium text-gray-700">每次生成影像数量</div>
+                        <div className="text-xs text-gray-500">单次 Inpaint 并行生成的结果数量</div>
+                      </div>
+                      <span className="text-sm font-mono text-blue-600 bg-blue-50 px-2 py-0.5 rounded">{inpaintCount}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={1}
+                      max={8}
+                      step={1}
+                      value={inpaintCount}
+                      onChange={e => setInpaintCount(Number(e.target.value))}
+                      className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                    />
+                    <div className="flex justify-between text-xs text-gray-400 mt-0.5">
+                      <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span>
+                    </div>
+                  </div>
+                </div>
+                <div className="border-t px-5 py-3 flex justify-end">
+                  <button
+                    className="px-4 py-2 text-sm rounded bg-blue-600 text-white hover:bg-blue-700"
+                    onClick={() => {
+                      bridgeSettingsService.updateSettings({ enableShadow, inpaintCount }).catch(() => undefined);
+                      setSettingsOpen(false);
+                    }}
+                  >
+                    确定
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="col-span-12 md:col-span-9 space-y-3">
             <div className="flex items-center justify-between">
               <div className="text-sm text-gray-600">
@@ -2134,7 +2317,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
                 </div>
               )}
               <div
-                ref={viewerRef}
+                ref={viewerRefCallback}
                 className="relative w-full overflow-hidden bg-black"
                 style={{ height: '70vh', touchAction: 'none' }}
                 onMouseDown={e => {
@@ -2181,20 +2364,6 @@ export const BridgeTaskLocatePage: React.FC = () => {
                 }}
                 onMouseUp={() => { dragRef.current.mode = null; }}
                 onMouseLeave={() => { dragRef.current.mode = null; }}
-                onWheel={e => {
-                  e.preventDefault();
-                  const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
-                  const mx = e.clientX - rect.left;
-                  const my = e.clientY - rect.top;
-                  const scale0 = view.scale;
-                  const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
-                  const scale1 = clamp(scale0 * factor, 1e-9, 1e12);
-                  const worldX = (mx - view.offsetX) / scale0;
-                  const worldY = -(my - view.offsetY) / scale0;
-                  const offsetX = mx - worldX * scale1;
-                  const offsetY = my + worldY * scale1;
-                  setView({ scale: scale1, offsetX, offsetY });
-                }}
               >
                 <canvas ref={baseCanvasRef} className="absolute inset-0" />
                 <canvas ref={overlayCanvasRef} className="absolute inset-0 pointer-events-none" />

@@ -24,7 +24,8 @@ export const BridgeProjects: React.FC = () => {
   const canReadParticipantProjects = permissions.includes('project:read_participant') || permissions.includes('project:read_own') || permissions.includes('project:read_department') || permissions.includes('project:read_global') || permissions.includes('project:read');
   const canDeleteProject = permissions.includes('project:delete_global') || permissions.includes('project:delete_department') || permissions.includes('project:delete');
   const canCreateProject = permissions.includes('project:create');
-  const canReadUsers = permissions.includes('user:read');
+  const canReadUsers = permissions.includes('user:read') || permissions.includes('user:read_department');
+  const canReadAllUsers = permissions.includes('user:read');
   const canEditProject = permissions.includes('project:update_global') || permissions.includes('project:update_department') || permissions.includes('project:update_own') || permissions.includes('project:update');
   const userId = user?.userId;
   const userName = user?.username;
@@ -222,7 +223,8 @@ export const BridgeProjects: React.FC = () => {
       setUserOptions([]);
       return;
     }
-    bridgeUserService.getUsers().then(users => {
+    const deptId = canReadAllUsers ? undefined : userDepartmentId;
+    bridgeUserService.getUsers(undefined, deptId).then(users => {
       const map: Record<string, string> = {};
       users.forEach((u: BridgeUser) => {
         if (u?.userId) {
@@ -232,7 +234,7 @@ export const BridgeProjects: React.FC = () => {
       setUserNameById(map);
       setUserOptions(users);
     }).catch(() => {});
-  }, [canReadUsers]);
+  }, [canReadUsers, canReadAllUsers, userDepartmentId]);
 
   useEffect(() => {
     if (!isCreating) return;
@@ -402,10 +404,12 @@ export const BridgeProjects: React.FC = () => {
         externalSystem: BRIDGE_APP_EXTERNAL_SYSTEM,
         externalTaskId,
         departmentId: user?.departmentId || null,
+        departmentName: user?.departmentName || null,
         createdByName: user?.username || null,
         createdDepartmentId: user?.departmentId || null,
         createdDepartmentName: user?.departmentName || null,
         project_leader_id: user?.userId || null,
+        assignee_name: user?.username || null,
         input_params: JSON.stringify(inputParams)
       });
 
@@ -534,10 +538,10 @@ export const BridgeProjects: React.FC = () => {
                 <td className="px-6 py-4 text-sm text-gray-600">
                   <div className="leading-tight">
                     <div>
-                      {departments.find(d => d.id === r.project.departmentId)?.departmentName || r.project.departmentId || '-'}
+                      {r.project.departmentName || departments.find(d => d.id === r.project.departmentId)?.departmentName || r.project.departmentId || '-'}
                     </div>
                     <div className="text-xs text-gray-500 mt-1 flex items-center gap-1">
-                      <span>{r.project.assigneeId ? (userNameById[r.project.assigneeId] || r.project.assigneeId) : '-'}</span>
+                      <span>{r.project.assigneeName || (r.project.assigneeId ? (userNameById[r.project.assigneeId] || r.project.assigneeId) : '-')}</span>
                       {canEditProject && (
                         <button
                           className="text-blue-600 hover:text-blue-800 ml-1"

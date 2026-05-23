@@ -189,7 +189,7 @@ def update_project(project_id: str):
     body = get_validated_body()
     updatable_fields = [
         "name", "task_name", "status", "priority", "assignee_id",
-        "project_leader_id", "department_id", "department_name",
+        "assignee_name", "project_leader_id", "department_id", "department_name",
         "operator_ids", "inspector_ids", "progress", "output_results",
         "created_by_name", "created_department_id", "created_department_name",
         "external_system", "external_task_id", "external_url",
@@ -490,6 +490,7 @@ def create_project():
         "department_name": body.get("department_name"),
         "project_leader_id": body.get("project_leader_id"),
         "assignee_id": body.get("project_leader_id"),
+        "assignee_name": (body.get("assignee_name") or current_user.get("username")) if body.get("project_leader_id") else None,
         "created_by_name": body.get("created_by_name") or current_user.get("username"),
         "created_department_id": body.get("created_department_id") or current_user.get("department_id"),
         "created_department_name": body.get("created_department_name") or current_user.get("department_name"),

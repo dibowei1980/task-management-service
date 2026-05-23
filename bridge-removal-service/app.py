@@ -19,6 +19,23 @@ def _camel_to_snake_request():
             request._cached_json = (converted, converted)
 
 
+def _ensure_columns(db):
+    _MIGRATIONS = [
+        ("projects", "assignee_name", "VARCHAR(128)"),
+        ("sessions", "upm_token", "TEXT"),
+    ]
+    with db.engine.connect() as conn:
+        for table, column, col_type in _MIGRATIONS:
+            try:
+                result = conn.execute(db.text(f"PRAGMA table_info({table})"))
+                existing = {row[1] for row in result}
+                if column not in existing:
+                    conn.execute(db.text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
+                    conn.commit()
+            except Exception:
+                pass
+
+
 def create_app():
     app = Flask(__name__)
     app.secret_key = os.getenv("BRIDGE_SECRET_KEY", secrets.token_hex(32))
@@ -54,6 +71,7 @@ def create_app():
     from api.upm import upm_bp
     from api.system import system_bp, health_bp
     from api.jobs import jobs_bp
+    from api.settings import settings_bp
 
     app.register_blueprint(health_bp)
     app.register_blueprint(auth_bp)
@@ -63,10 +81,12 @@ def create_app():
     app.register_blueprint(upm_bp)
     app.register_blueprint(system_bp)
     app.register_blueprint(jobs_bp)
+    app.register_blueprint(settings_bp)
 
     with app.app_context():
         from db.models import ProjectModel, JobModel, SessionModel
         db.create_all()
+        _ensure_columns(db)
 
     return app
 

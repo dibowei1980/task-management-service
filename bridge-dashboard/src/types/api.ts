@@ -21,6 +21,7 @@ export interface ProjectCreatePayload {
   status?: string;
   callbackUrl?: string;
   departmentId?: string | null;
+  departmentName?: string | null;
   externalSystem?: string;
   externalTaskId?: string;
   createdByName?: string | null;
@@ -32,6 +33,7 @@ export interface ProjectCreatePayload {
   input_params?: string;
   projectLeaderId?: string | null;
   project_leader_id?: string | null;
+  assignee_name?: string | null;
 }
 
 export interface ProjectUpdatePayload {
@@ -42,12 +44,15 @@ export interface ProjectUpdatePayload {
   projectLeaderId?: string | null;
   departmentId?: string;
   assigneeId?: string | null;
+  assigneeName?: string | null;
   operatorIds?: string[];
 }
 
 export interface TaskUpdatePayload {
   assigneeId?: string | null;
   assignee_id?: string | null;
+  assigneeName?: string | null;
+  assignee_name?: string | null;
   operatorIds?: string[];
   operator_ids?: string[];
   priority?: number;

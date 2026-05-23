@@ -46,6 +46,7 @@ def _load_session_from_db(token):
         "email": data.get("email"),
         "roles": data.get("roles"),
         "sso_session_id": data.get("sso_session_id"),
+        "upm_token": data.get("upm_token"),
     }
 
 
@@ -205,6 +206,7 @@ def upm_login():
             "department_id": upm_department_id,
             "department_name": upm_department_name,
             "roles": upm_roles,
+            "upm_token": upm_data.get("token"),
         }
 
         if upm_roles:
@@ -235,6 +237,7 @@ def upm_login():
             "department_name": user_info["department_name"],
             "email": user_info["email"],
             "roles": json.dumps(user_info["roles"]),
+            "upm_token": user_info.get("upm_token"),
         })
 
         return api_ok({
@@ -357,6 +360,9 @@ def sso_token():
                     user_info["role"] = "operator"
                     break
 
+        from api.upm import _get_upm_service_token
+        user_info["upm_token"] = _get_upm_service_token()
+
         local_token = secrets.token_hex(32)
         _sessions[local_token] = user_info
 
@@ -373,6 +379,7 @@ def sso_token():
             "email": user_info.get("email", ""),
             "roles": json.dumps(user_info.get("roles", [])),
             "sso_session_id": sso_session_id,
+            "upm_token": user_info.get("upm_token"),
         })
 
         _register_sso_client(sso_session_id)

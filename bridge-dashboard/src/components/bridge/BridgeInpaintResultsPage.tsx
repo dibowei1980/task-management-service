@@ -4,11 +4,13 @@ import { bridgeTaskService } from '../../services/bridgeService';
 
 type InpaintStatusPayload = {
   jobId?: string;
+  job_id?: string;
   taskId?: string;
   status?: string;
   error?: string;
   outputPath?: string;
   outputPaths?: string[];
+  imagePath?: string;
   originalImagePath?: string;
 };
 
@@ -104,7 +106,8 @@ export const BridgeInpaintResultsPage: React.FC<BridgeInpaintResultsPageProps> =
     try {
       const res = await bridgeTaskService.getInpaintStatus(taskId, currentJobId);
       const payload = res as InpaintStatusPayload;
-      const status = payload.status || 'pending';
+      const statusRaw = payload.status || '';
+      const status = statusRaw.toLowerCase();
       setStatusCode(status);
       const outputs = Array.isArray(payload.outputPaths)
         ? payload.outputPaths.filter((v): v is string => typeof v === 'string' && v.length > 0)
@@ -115,17 +118,18 @@ export const BridgeInpaintResultsPage: React.FC<BridgeInpaintResultsPageProps> =
       if (nextOutputs.length && selectedIndex >= nextOutputs.length) {
         setSelectedIndex(0);
       }
-      const original = typeof payload.originalImagePath === 'string' ? payload.originalImagePath : null;
+      const original = typeof payload.originalImagePath === 'string' ? payload.originalImagePath
+        : (typeof payload.imagePath === 'string' ? payload.imagePath : null);
       setOriginalPath(original);
-      if (status === 'pending') {
+      if (status === 'pending' || status === 'in_progress') {
         setStatusText('生成处理中...');
-      } else if (status === 'succeeded') {
+      } else if (status === 'succeeded' || status === 'completed') {
         setStatusText('生成完成');
       } else if (status === 'failed') {
         const err = payload.error ? `失败：${payload.error}` : '生成失败';
         setStatusText(err);
       } else {
-        setStatusText(status);
+        setStatusText(statusRaw);
       }
       setLoadError(null);
       return status;
@@ -142,7 +146,7 @@ export const BridgeInpaintResultsPage: React.FC<BridgeInpaintResultsPageProps> =
     const tick = async () => {
       const next = await refreshStatus(jobId);
       if (disposed) return;
-      if (next === 'pending') {
+      if (next === 'pending' || next === 'in_progress') {
         timer = window.setTimeout(tick, 3000);
       }
     };
@@ -182,7 +186,7 @@ export const BridgeInpaintResultsPage: React.FC<BridgeInpaintResultsPageProps> =
     try {
       const res = await bridgeTaskService.retryInpaint(taskId, jobId);
       const payload = res as InpaintStatusPayload;
-      const nextJobId = payload.jobId || '';
+      const nextJobId = payload.jobId || payload.job_id || '';
       if (nextJobId) {
         setJobId(nextJobId);
         navigate(`/tasks/${taskId}/inpaint-results?jobId=${encodeURIComponent(nextJobId)}`, { replace: true });
@@ -227,7 +231,7 @@ export const BridgeInpaintResultsPage: React.FC<BridgeInpaintResultsPageProps> =
     }
   }, [canConfirm, taskId, jobId, selectedIndex, onConfirmed, onClose]);
 
-  const handleWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
+  const handleWheel = useCallback((event: WheelEvent) => {
     event.preventDefault();
     if (!containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
@@ -295,6 +299,14 @@ export const BridgeInpaintResultsPage: React.FC<BridgeInpaintResultsPageProps> =
     });
     setDividerRatio(0);
   }, []);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => { handleWheel(e); };
+    el.addEventListener('wheel', handler, { passive: false });
+    return () => el.removeEventListener('wheel', handler);
+  }, [handleWheel]);
 
   const transformStyle = useMemo(() => ({
     transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
@@ -397,7 +409,6 @@ export const BridgeInpaintResultsPage: React.FC<BridgeInpaintResultsPageProps> =
           <div
             ref={containerRef}
             className="relative w-full h-[70vh] bg-black/5 border rounded overflow-hidden select-none"
-            onWheel={handleWheel}
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             style={{ touchAction: 'none' }}

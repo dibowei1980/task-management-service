@@ -98,13 +98,22 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
     loadUnits().catch((e) => logger.error('loadUnits', e));
   }, [loadUnits]);
 
+  const canReadAllUsers = roles.includes('user:read');
+  const canReadDeptUsers = roles.includes('user:read_department');
+  const userDepartmentId = user?.departmentId;
+
   useEffect(() => {
     loadProject().catch((e) => logger.error('loadProject', e));
   }, [loadProject]);
 
   useEffect(() => {
-    bridgeUserService.getUsers().then(setUserOptions).catch(() => setUserOptions([]));
-  }, []);
+    if (!canReadAllUsers && !canReadDeptUsers) {
+      setUserOptions([]);
+      return;
+    }
+    const deptId = canReadAllUsers ? undefined : userDepartmentId;
+    bridgeUserService.getUsers(undefined, deptId).then(setUserOptions).catch(() => setUserOptions([]));
+  }, [canReadAllUsers, canReadDeptUsers, userDepartmentId]);
 
   useEffect(() => {
     setPage(1);
@@ -152,6 +161,8 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
   };
 
   const getAssigneeDisplay = (task: BridgeTask): string => {
+    const name = task.assigneeName;
+    if (name) return name;
     const id = task.assigneeId || '';
     if (!id) return '-';
     if (id === userId && userName) return userName;
@@ -481,7 +492,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
       const operatorIds = Array.isArray(task.operatorIds) && task.operatorIds.length > 0
         ? Array.from(new Set([userId, ...task.operatorIds]))
         : [userId];
-      await bridgeTaskService.updateTask(task.id, { assignee_id: userId, operator_ids: operatorIds });
+      await bridgeTaskService.updateTask(task.id, { assignee_id: userId, assignee_name: userName || '', operator_ids: operatorIds });
       await updateWorkflow(task.id, '处理中');
       setActiveTab('处理中');
       setFocusTaskId(task.id);
@@ -536,7 +547,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
           const operatorIds = Array.isArray(task.operatorIds) && task.operatorIds.length > 0
             ? Array.from(new Set([userId, ...task.operatorIds]))
             : [userId];
-          await bridgeTaskService.updateTask(task.id, { assignee_id: userId, operator_ids: operatorIds });
+          await bridgeTaskService.updateTask(task.id, { assignee_id: userId, assignee_name: userName || '', operator_ids: operatorIds });
           await bridgeTaskService.updateWorkflowStatus(task.id, { workflowStatus: '处理中' });
         }));
         const failed = results.filter(r => r.status === 'rejected').length;
@@ -599,8 +610,8 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
     </div>
   );
 
-  const renderView = () => (
-    <button className="text-blue-600 hover:text-blue-900" type="button" onClick={() => {}}>
+  const renderView = (task: BridgeTask) => (
+    <button className="text-blue-600 hover:text-blue-900" type="button" onClick={() => navigate(`/tasks/${task.id}/locate?mode=edit`)}>
       查看
     </button>
   );
