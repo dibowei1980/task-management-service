@@ -35,6 +35,12 @@ def _load_session_from_db(token):
             perms = json.loads(perms)
         except (json.JSONDecodeError, TypeError):
             perms = []
+    roles = data.get("roles", "[]")
+    if isinstance(roles, str):
+        try:
+            roles = json.loads(roles)
+        except (json.JSONDecodeError, TypeError):
+            roles = []
     return {
         "user_id": data.get("user_id", ""),
         "username": data.get("username", ""),
@@ -44,7 +50,7 @@ def _load_session_from_db(token):
         "department_id": data.get("department_id"),
         "department_name": data.get("department_name"),
         "email": data.get("email"),
-        "roles": data.get("roles"),
+        "roles": roles,
         "sso_session_id": data.get("sso_session_id"),
         "upm_token": data.get("upm_token"),
     }
@@ -347,6 +353,39 @@ def sso_token():
             "sso_session_id": sso_session_id,
         }
 
+        if SSO_CLIENT_SECRET and sso_session_id:
+            try:
+                from api.upm import _sso_proxy_get
+                username = user_info["username"]
+                proxy_user = None
+                if username:
+                    proxy_user = _sso_proxy_get(f"users/username/{username}", user_info=user_info)
+                if not isinstance(proxy_user, dict):
+                    all_users = _sso_proxy_get("users", user_info=user_info)
+                    if isinstance(all_users, list):
+                        for u in all_users:
+                            if u.get("username") == username:
+                                proxy_user = u
+                                break
+                if isinstance(proxy_user, dict):
+                    upm_id = proxy_user.get("id") or proxy_user.get("userId")
+                    if upm_id:
+                        user_info["user_id"] = upm_id
+                    if proxy_user.get("email"):
+                        user_info["email"] = proxy_user["email"]
+                    if proxy_user.get("departmentId"):
+                        user_info["department_id"] = proxy_user["departmentId"]
+                    if proxy_user.get("departmentName"):
+                        user_info["department_name"] = proxy_user["departmentName"]
+                    if proxy_user.get("displayName"):
+                        user_info["display_name"] = proxy_user["displayName"]
+                    if proxy_user.get("roles"):
+                        user_info["roles"] = proxy_user["roles"]
+                    if proxy_user.get("permissions"):
+                        user_info["permissions"] = proxy_user["permissions"]
+            except Exception as proxy_err:
+                logger.warning("SSO proxy user lookup failed: %s", proxy_err)
+
         if user_info["roles"]:
             for r in user_info["roles"]:
                 r_upper = r.upper()
@@ -360,8 +399,7 @@ def sso_token():
                     user_info["role"] = "operator"
                     break
 
-        from api.upm import _get_upm_service_token
-        user_info["upm_token"] = _get_upm_service_token()
+        user_info["upm_token"] = None
 
         local_token = secrets.token_hex(32)
         _sessions[local_token] = user_info

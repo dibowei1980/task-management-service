@@ -17,6 +17,9 @@ UPM_API_TOKEN = os.getenv("UPM_API_TOKEN", "")
 UPM_INTERNAL_API_KEY = os.getenv("UPM_INTERNAL_API_KEY", "")
 UPM_SERVICE_USERNAME = os.getenv("UPM_SERVICE_USERNAME", "")
 UPM_SERVICE_PASSWORD = os.getenv("UPM_SERVICE_PASSWORD", "")
+SSO_BASE_URL = os.getenv("SSO_BASE_URL", "http://127.0.0.1:8080")
+SSO_CLIENT_ID = os.getenv("SSO_CLIENT_ID", "bridge-removal-service")
+SSO_CLIENT_SECRET = os.getenv("SSO_CLIENT_SECRET", "")
 
 _upm_available = False
 _upm_service_token = None
@@ -51,6 +54,37 @@ def _get_upm_service_token():
         return None
     except Exception:
         _upm_available = False
+        return None
+
+
+def _sso_proxy_headers(user_info):
+    sso_session_id = user_info.get("sso_session_id") if isinstance(user_info, dict) else None
+    if not sso_session_id or not SSO_CLIENT_SECRET:
+        return None
+    return {
+        "X-Session-Id": sso_session_id,
+        "X-Client-Id": SSO_CLIENT_ID,
+        "X-Client-Secret": SSO_CLIENT_SECRET,
+    }
+
+
+def _sso_proxy_get(path, params=None, user_info=None):
+    headers = _sso_proxy_headers(user_info)
+    if not headers:
+        return None
+    try:
+        resp = requests.get(
+            f"{SSO_BASE_URL}/api/sso/proxy/{path}",
+            params=params,
+            headers=headers,
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            return resp.json()
+        logger.warning("SSO proxy GET %s returned %s", path, resp.status_code)
+        return None
+    except requests.RequestException as e:
+        logger.warning("SSO proxy GET %s failed: %s", path, e)
         return None
 
 
@@ -92,11 +126,37 @@ def _check_upm_available():
     return _upm_available
 
 
+def _can_use_sso_proxy(user_info):
+    if not isinstance(user_info, dict):
+        return False
+    if not user_info.get("sso_session_id"):
+        return False
+    if not SSO_CLIENT_SECRET:
+        return False
+    return True
+
+
 @upm_bp.route("/users", methods=["GET"])
 @require_local_auth
 def upm_proxy_users():
     role_name = request.args.get("roleName", "")
     department_id = request.args.get("departmentId", "")
+    user_info = getattr(request, "current_user", None)
+
+    if _can_use_sso_proxy(user_info):
+        params = {}
+        if role_name:
+            params["roleName"] = role_name
+        params["isActive"] = "true"
+        result = _sso_proxy_get("users/search", params=params, user_info=user_info)
+        if result is not None:
+            if department_id:
+                result = [u for u in result if u.get("department_id") == department_id or u.get("departmentId") == department_id]
+            for u in result:
+                if "id" in u and "userId" not in u:
+                    u["userId"] = u["id"]
+            return api_ok(result)
+
     headers = _upm_headers()
     if not headers:
         return api_error("upm_unavailable", "UPM service is not available", 503)
@@ -135,6 +195,13 @@ def upm_proxy_users():
 @upm_bp.route("/departments", methods=["GET"])
 @require_local_auth
 def upm_proxy_departments():
+    user_info = getattr(request, "current_user", None)
+
+    if _can_use_sso_proxy(user_info):
+        result = _sso_proxy_get("departments", user_info=user_info)
+        if result is not None:
+            return api_ok(result)
+
     headers = _upm_headers()
     if not headers:
         return api_error("upm_unavailable", "UPM service is not available", 503)
