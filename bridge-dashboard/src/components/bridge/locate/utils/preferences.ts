@@ -9,6 +9,7 @@ export const loadDisplayTogglePrefs = () => {
     return {
       showBridgeRange: !!parsed.showBridgeRange,
       showCenterline: !!parsed.showCenterline,
+      showLightDirection: !!parsed.showLightDirection,
       showImpactRange: !!parsed.showImpactRange,
       showMask: !!parsed.showMask,
     };

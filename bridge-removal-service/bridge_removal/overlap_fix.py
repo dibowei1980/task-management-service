@@ -222,7 +222,16 @@ def run(payload: dict):
         tile, temp_prev_world = _prepare_prev_result_tile(previous_result_path, previous_world_file_path)
         warped = tile.read_region(map_bounds, target_res, target_width, target_height)
         if warped is None:
-            raise RuntimeError("OVERLAP_FIX_WARP_FAILED")
+            img_test = cv2.imread(previous_result_path, cv2.IMREAD_UNCHANGED)
+            warp_detail = (
+                f"path={previous_result_path}, "
+                f"tile_valid={tile.valid}, "
+                f"tile_bounds={tile.bounds}, "
+                f"map_bounds={map_bounds}, "
+                f"imread_result={'None' if img_test is None else f'shape={img_test.shape}'}, "
+                f"world_file_exists={os.path.isfile(tile.world_file_path)}"
+            )
+            raise RuntimeError(f"OVERLAP_FIX_WARP_FAILED: {warp_detail}")
         current = _read_image(current_image_path, cv2.IMREAD_UNCHANGED)
         current_bgra = _to_bgra(current)
         warped_bgra = _to_bgra(warped)

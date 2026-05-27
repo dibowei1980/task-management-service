@@ -424,43 +424,51 @@ def clear_pool_and_cancel_runninghub_tasks(api_key, job_id=None):
         unregister_task(task_id, api_key)
     return results
 
-def qwen_bridge_removal(api_key, original_image_path, removal_mask_path, crop_mask_path, output_path, seed="",  job_id=""):
-    webapp_id = os.getenv("RUNNINGHUB_WEBAPP_ID", "2029163935819108353").strip()
+def run_webapp(api_key: str, webapp_name: str, params: dict, output_path: str, job_id: str = "") -> str:
+    from bridge_removal.runninghub_config import (
+        get_webapp_id, get_webapp_config, get_upload_node_ids, get_queue_config, fill_params,
+    )
+    webapp_id = get_webapp_id(webapp_name)
+    if not webapp_id:
+        raise RuntimeError(f"未找到 webapp 配置: {webapp_name}")
+    webapp_config = get_webapp_config(webapp_name)
+    if not webapp_config:
+        raise RuntimeError(f"webapp 配置为空: {webapp_name}")
+    upload_node_ids = get_upload_node_ids(webapp_name)
     node_info_list = get_nodo(webapp_id, api_key)
     if not node_info_list:
         raise RuntimeError("无法获取节点信息")
-
-    uploads = {
-        "15": original_image_path,
-        "37": removal_mask_path,
-        "45": crop_mask_path,
-        # "73": 1,
-        # "74": 0,
-    }
-    if seed:
-        uploads["70"] = seed
-    for node_id, value in uploads.items():
-        if(node_id in ["15","37","45"]):
-            file_path = value
+    resolved = fill_params(webapp_name, params)
+    node_mapping = webapp_config.get("nodes", {})
+    for label, value in resolved.items():
+        matched_node_id = None
+        for nid, ndef in node_mapping.items():
+            if ndef.get("label") == label:
+                matched_node_id = nid
+                break
+        if matched_node_id is None:
+            continue
+        if matched_node_id in upload_node_ids:
+            file_path = str(value)
             upload_result = upload_file(api_key, file_path)
             if not upload_result or upload_result.get("msg") != "success":
-                raise RuntimeError(f"上传失败 nodeId={node_id}: {upload_result}")
+                raise RuntimeError(f"上传失败 nodeId={matched_node_id}: {upload_result}")
             file_name = upload_result.get("data", {}).get("fileName")
             if not file_name:
-                raise RuntimeError(f"上传结果缺少fileName nodeId={node_id}: {upload_result}")
+                raise RuntimeError(f"上传结果缺少fileName nodeId={matched_node_id}: {upload_result}")
             data = file_name
         else:
-            data = value
+            data = str(value)
         matched = False
         for node in node_info_list:
-            if str(node.get("nodeId")) == str(node_id):
+            if str(node.get("nodeId")) == str(matched_node_id):
                 node["fieldValue"] = data
                 matched = True
         if not matched:
-            raise RuntimeError(f"未找到可写入的节点 nodeId={node_id}")
-
-    max_retries = int(os.getenv("RUNNINGHUB_QUEUE_RETRY", "60"))
-    retry_interval = float(os.getenv("RUNNINGHUB_QUEUE_RETRY_INTERVAL", "5"))
+            raise RuntimeError(f"未找到可写入的节点 nodeId={matched_node_id}")
+    queue_cfg = get_queue_config(webapp_name)
+    max_retries = queue_cfg["queue_retry"]
+    retry_interval = queue_cfg["queue_retry_interval"]
     submit_result = None
     attempt = 0
     while True:
@@ -476,11 +484,21 @@ def qwen_bridge_removal(api_key, original_image_path, removal_mask_path, crop_ma
         raise RuntimeError(f"任务提交失败: {submit_result}")
     task_id = submit_result["data"]["taskId"]
     register_task(task_id, api_key, job_id)
-
     try:
         return _poll_task_result(api_key, task_id, output_path)
     finally:
         unregister_task(task_id, api_key)
+
+
+def qwen_bridge_removal(api_key, original_image_path, removal_mask_path, crop_mask_path, output_path, seed="",  job_id=""):
+    params = {
+        "original_image": original_image_path,
+        "removal_mask": removal_mask_path,
+        "crop_mask": crop_mask_path,
+    }
+    if seed:
+        params["seed"] = seed
+    return run_webapp(api_key, "bridge_removal", params, output_path, job_id=job_id)
 
 def main():
     if len(sys.argv) < 6:

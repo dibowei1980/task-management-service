@@ -2,6 +2,8 @@ import json
 import logging
 import os
 import re
+import base64
+import shutil
 import threading
 import traceback
 import urllib.parse
@@ -12,7 +14,7 @@ from flask import Blueprint, current_app, request
 
 from api.auth import require_local_auth, require_auth, require_permission
 from api.utils import api_ok, api_accepted, api_error
-from api.schemas import validate_body, get_validated_body, WorkflowStatusBody, TaskExecuteBody, PreprocessGenerateBody, MaskGenerateBody, MaskSaveBody, InpaintStartBody, InpaintResultBody, MergeResultsBody, ProjectUpdateBody
+from api.schemas import validate_body, get_validated_body, WorkflowStatusBody, TaskExecuteBody, PreprocessGenerateBody, MaskGenerateBody, MaskSaveBody, InpaintStartBody, InpaintResultBody, MergeResultsBody, ProjectUpdateBody, LocalEditStartBody, LocalEditApplyBody
 from services.project_service import (
     get_project, project_to_task_response, find_project_by_task_id,
     update_project_fields,
@@ -95,7 +97,7 @@ def _read_segment_json(json_path: str) -> dict | None:
         return None
 
 
-def _run_sam2_pipeline(segment_json_path: str, masks_dir: str, task_id: str, enable_shadow: bool = False) -> dict:
+def _run_sam2_pipeline(segment_json_path: str, masks_dir: str, task_id: str, enable_shadow: bool = False, sam2_dilate_iterations: int = 2, polygon_dilate_iterations: int = 2, light_expand_pixels: int = 1) -> dict:
     from bridge_removal.mask_pipeline import run_mask_generation, generate_bridge_masks_from_json
     payload = {
         "segment_json_path": segment_json_path,
@@ -103,10 +105,10 @@ def _run_sam2_pipeline(segment_json_path: str, masks_dir: str, task_id: str, ena
     }
     payload_text = json.dumps(payload, ensure_ascii=False)
     try:
-        result = run_mask_generation(task_id, payload_text)
+        result = run_mask_generation(task_id, payload_text, sam2_dilate_iterations=sam2_dilate_iterations, light_expand_pixels=light_expand_pixels)
     except Exception as e:
         logger.warning("SAM2 pipeline failed, falling back to polygon: %s", e)
-        return generate_bridge_masks_from_json(segment_json_path, masks_dir, enable_shadow=enable_shadow)
+        return generate_bridge_masks_from_json(segment_json_path, masks_dir, enable_shadow=enable_shadow, dilate_iterations=polygon_dilate_iterations)
     segments = []
     has_error = False
     if isinstance(result, dict):
@@ -116,7 +118,7 @@ def _run_sam2_pipeline(segment_json_path: str, masks_dir: str, task_id: str, ena
                 break
     if has_error:
         logger.warning("SAM2 pipeline returned errors, falling back to polygon")
-        return generate_bridge_masks_from_json(segment_json_path, masks_dir, enable_shadow=enable_shadow)
+        return generate_bridge_masks_from_json(segment_json_path, masks_dir, enable_shadow=enable_shadow, dilate_iterations=polygon_dilate_iterations)
     if isinstance(result, dict):
         for item in result.get("items", []):
             seg_entry = {
@@ -131,6 +133,8 @@ def _run_sam2_pipeline(segment_json_path: str, masks_dir: str, task_id: str, ena
                 seg_entry["shadow_mask_path"] = os.path.join(output_dir, f"{base_name}_shadow_mask.png")
                 seg_entry["merged_mask_path"] = os.path.join(output_dir, f"{base_name}_mask_with_shadow.png")
                 seg_entry["overlay_path"] = os.path.join(output_dir, f"{base_name}_overlay.png")
+            if item.get("light_direction"):
+                seg_entry["lightDirection"] = item["light_direction"]
             segments.append(seg_entry)
     if not segments:
         segments.append({"json_path": segment_json_path, "pipeline": "sam2", "error": "no_results"})
@@ -669,6 +673,16 @@ def preprocess_segments(task_id: str):
             if seg_base_name in inpaint_job_map:
                 seg_item["inpaintJobId"] = inpaint_job_map[seg_base_name]
 
+            ld_json_path = os.path.join(masks_dir, f"{seg_base_name}_light_direction.json")
+            if os.path.isfile(ld_json_path):
+                try:
+                    with open(ld_json_path, "r", encoding="utf-8") as ld_f:
+                        ld_data = json.load(ld_f)
+                    if ld_data.get("light_direction"):
+                        seg_item["lightDirection"] = ld_data["light_direction"]
+                except Exception:
+                    pass
+
             segments.append(seg_item)
 
     all_segment_results_ready = all(s.get("resultFileUrl") for s in segments) if segments else False
@@ -905,6 +919,9 @@ def mask_generate(task_id: str):
             logger.info("SAM2 not available, all segments will use polygon pipeline")
 
         enable_shadow = bool(merged_params.get("enable_shadow", False))
+        polygon_dilate_iterations = int(merged_params.get("polygon_dilate_iterations", 2))
+        sam2_dilate_iterations = int(merged_params.get("sam2_dilate_iterations", 2))
+        light_expand_pixels = int(merged_params.get("sam2_light_expand_pixels", 1))
 
         all_segments = []
         errors = []
@@ -919,9 +936,9 @@ def mask_generate(task_id: str):
                 big = is_big_bridge(seg_data) if seg_data else False
                 use_sam2 = sam2_ok and big
                 if use_sam2:
-                    result = _run_sam2_pipeline(item_path, masks_dir, task_id, enable_shadow=enable_shadow)
+                    result = _run_sam2_pipeline(item_path, masks_dir, task_id, enable_shadow=enable_shadow, sam2_dilate_iterations=sam2_dilate_iterations, polygon_dilate_iterations=polygon_dilate_iterations, light_expand_pixels=light_expand_pixels)
                 else:
-                    result = generate_bridge_masks_from_json(item_path, masks_dir, enable_shadow=enable_shadow)
+                    result = generate_bridge_masks_from_json(item_path, masks_dir, enable_shadow=enable_shadow, dilate_iterations=polygon_dilate_iterations)
                     for seg in result.get("segments", []):
                         if big and not sam2_ok:
                             seg["pipeline"] = "polygon_sam2_unavailable"
@@ -946,9 +963,9 @@ def mask_generate(task_id: str):
             big = is_big_bridge(seg_data) if seg_data else False
             use_sam2 = sam2_ok and big
             if use_sam2:
-                result = _run_sam2_pipeline(segment_json_path, masks_dir, task_id, enable_shadow=enable_shadow)
+                result = _run_sam2_pipeline(segment_json_path, masks_dir, task_id, enable_shadow=enable_shadow, sam2_dilate_iterations=sam2_dilate_iterations, polygon_dilate_iterations=polygon_dilate_iterations, light_expand_pixels=light_expand_pixels)
             else:
-                result = generate_bridge_masks_from_json(segment_json_path, masks_dir, enable_shadow=enable_shadow)
+                result = generate_bridge_masks_from_json(segment_json_path, masks_dir, enable_shadow=enable_shadow, dilate_iterations=polygon_dilate_iterations)
                 for seg in result.get("segments", []):
                     if big and not sam2_ok:
                         seg["pipeline"] = "polygon_sam2_unavailable"
@@ -960,7 +977,7 @@ def mask_generate(task_id: str):
         else:
             segments_dir = os.path.join(task_dir, "segments")
             if os.path.isdir(segments_dir):
-                result = generate_bridge_masks(segments_dir, masks_dir, enable_shadow=enable_shadow)
+                result = generate_bridge_masks(segments_dir, masks_dir, enable_shadow=enable_shadow, dilate_iterations=polygon_dilate_iterations)
                 if result.get("error"):
                     return api_ok({"mask_manifest": {"error": result["error"]}})
                 all_segments = result.get("segments", [])
@@ -1107,10 +1124,12 @@ def inpaint_start(task_id: str):
         return api_error("bad_request", f"裁剪掩膜路径无效: {crop_mask_path}", 400)
 
     seed = str(merged_params.get("seed", ""))
+    blur_radius = str(body.get("blur_radius", merged_params.get("blur_radius", 2)))
+    expand = str(body.get("expand", merged_params.get("expand", 3)))
 
     job_id = create_job_record(task_id, "INPAINT_START", input_params)
 
-    from bridge_removal.inpaint_gen_Runninghub import qwen_bridge_removal, TaskPollError, run_batch_with_pool, _aggregate_batch_results
+    from bridge_removal.inpaint_gen_Runninghub import run_webapp, TaskPollError, run_batch_with_pool, _aggregate_batch_results
     app = current_app._get_current_object()
 
     def _run():
@@ -1162,8 +1181,17 @@ def inpaint_start(task_id: str):
                 args_list = []
                 for i in range(1, inpaint_count + 1):
                     out_path = os.path.join(batch_dir, f"{i}.png")
-                    args_list.append((api_key, effective_image_path, effective_removal_mask_path, effective_crop_mask_path, out_path, seed, job_id))
-                results, errors = run_batch_with_pool(qwen_bridge_removal, args_list)
+                    params = {
+                        "original_image": effective_image_path,
+                        "removal_mask": effective_removal_mask_path,
+                        "crop_mask": effective_crop_mask_path,
+                    }
+                    if seed:
+                        params["seed"] = seed
+                    params["blur_radius"] = blur_radius
+                    params["expand"] = expand
+                    args_list.append((api_key, "bridge_removal", params, out_path, job_id))
+                results, errors = run_batch_with_pool(run_webapp, args_list)
                 batch_id = job_id or str(uuid.uuid4())
                 success, payload = _aggregate_batch_results(batch_id, results, errors)
                 output_paths = [r for r in results if r]
@@ -1343,10 +1371,10 @@ def inpaint_result(task_id: str):
                     wf_lines = wf.read().strip().splitlines()
                 if len(wf_lines) >= 6:
                     a = float(wf_lines[0].strip())
-                    b = float(wf_lines[1].strip())
-                    c = float(wf_lines[2].strip())
-                    d = float(wf_lines[3].strip())
-                    e = float(wf_lines[4].strip())
+                    d = float(wf_lines[1].strip())
+                    b = float(wf_lines[2].strip())
+                    e = float(wf_lines[3].strip())
+                    c = float(wf_lines[4].strip())
                     f_val = float(wf_lines[5].strip())
                     if result_w > 0 and result_h > 0:
                         seg_img_path = ""
@@ -1410,6 +1438,346 @@ def inpaint_file(task_id: str):
 
     mime = "image/tiff" if inpainted_path.lower().endswith((".tif", ".tiff")) else "image/png"
     return send_file(inpainted_path, mimetype=mime)
+
+
+_LOCAL_EDIT_CROP_HALF = 256
+_LOCAL_EDIT_WEBAPP_ID = "2058840264650874881"
+_LOCAL_EDIT_WEBAPP_NAME = "bridge_local_edit"
+_LOCAL_EDIT_MAX_SMUDGE = 480
+
+
+def _ensure_local_edit_webapp():
+    from bridge_removal.runninghub_config import get_webapp_config
+    existing = get_webapp_config(_LOCAL_EDIT_WEBAPP_NAME)
+    if not existing:
+        logger.warning("bridge_local_edit webapp 配置未找到，请检查 runninghub_webapps.json")
+
+
+@tasks_bp.route("/<task_id>/local-edit-start", methods=["POST"])
+@require_local_auth
+@require_permission("task:execute")
+@validate_body(LocalEditStartBody)
+def local_edit_start(task_id: str):
+    import cv2
+    import numpy as np
+    body = get_validated_body()
+    image_path = body.get("image_path", "")
+    mask_data_b64 = body.get("mask_data", "")
+    prompt = body.get("prompt", "")
+    num_candidates = body.get("num_candidates", 1)
+    crop_bounds_str = body.get("crop_bounds", "")
+    input_params = body.get("input_params") or {}
+
+    project = find_project_by_task_id(task_id)
+    if not project:
+        return api_error("not_found", "Task not found", 404)
+
+    db_input_params = project.get("input_params") or {}
+    if isinstance(db_input_params, str):
+        try:
+            db_input_params = json.loads(db_input_params)
+        except (json.JSONDecodeError, TypeError):
+            db_input_params = {}
+    merged_params = {**db_input_params, **input_params}
+
+    if not image_path or not os.path.isfile(image_path):
+        return api_error("bad_request", f"原始影像路径无效: {image_path}", 400)
+
+    if not mask_data_b64:
+        return api_error("bad_request", "掩膜数据不能为空", 400)
+
+    crop_bounds = None
+    if crop_bounds_str:
+        try:
+            parts = [int(v) for v in crop_bounds_str.split(",")]
+            if len(parts) == 4 and all(v >= 0 for v in parts):
+                crop_bounds = tuple(parts)
+        except (ValueError, TypeError):
+            pass
+    if not crop_bounds or len(crop_bounds) != 4:
+        return api_error("bad_request", "裁剪范围格式错误，需要 x,y,w,h", 400)
+
+    crop_x, crop_y, crop_w, crop_h = crop_bounds
+    if crop_w > _LOCAL_EDIT_MAX_SMUDGE or crop_h > _LOCAL_EDIT_MAX_SMUDGE:
+        return api_error("bad_request", f"涂抹范围超过{_LOCAL_EDIT_MAX_SMUDGE}像素限制", 400)
+
+    intermediate_path = _resolve_intermediate_path(project, merged_params)
+    local_edit_dir = os.path.join(intermediate_path, "local_edit")
+    os.makedirs(local_edit_dir, exist_ok=True)
+
+    try:
+        mask_bytes = base64.b64decode(mask_data_b64)
+        mask_arr = np.frombuffer(mask_bytes, dtype=np.uint8)
+        mask_img = cv2.imdecode(mask_arr, cv2.IMREAD_UNCHANGED)
+    except Exception:
+        return api_error("bad_request", "掩膜数据解码失败", 400)
+    if mask_img is None:
+        return api_error("bad_request", "掩膜数据解码为空", 400)
+
+    if mask_img.ndim == 3:
+        mask_img = cv2.cvtColor(mask_img, cv2.COLOR_BGR2GRAY) if mask_img.shape[2] == 3 else cv2.cvtColor(mask_img, cv2.COLOR_BGRA2GRAY)
+    _, mask_binary = cv2.threshold(mask_img, 127, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(mask_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return api_error("bad_request", "掩膜中没有检测到涂抹区域", 400)
+    all_pts = np.vstack(contours)
+    smudge_x, smudge_y, smudge_w, smudge_h = cv2.boundingRect(all_pts)
+    if smudge_w > _LOCAL_EDIT_MAX_SMUDGE or smudge_h > _LOCAL_EDIT_MAX_SMUDGE:
+        return api_error("bad_request", f"涂抹范围({smudge_w}x{smudge_h})超过{_LOCAL_EDIT_MAX_SMUDGE}像素限制", 400)
+
+    img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
+    if img is None:
+        return api_error("bad_request", f"无法读取原始影像: {image_path}", 400)
+    if img.ndim == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    elif img.shape[2] == 4:
+        img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+
+    center_x = smudge_x + smudge_w // 2
+    center_y = smudge_y + smudge_h // 2
+    cx = max(0, center_x - _LOCAL_EDIT_CROP_HALF)
+    cy = max(0, center_y - _LOCAL_EDIT_CROP_HALF)
+    cx2 = min(img.shape[1], center_x + _LOCAL_EDIT_CROP_HALF)
+    cy2 = min(img.shape[0], center_y + _LOCAL_EDIT_CROP_HALF)
+    cw = cx2 - cx
+    ch = cy2 - cy
+
+    cropped_img = img[cy:cy2, cx:cx2]
+    cropped_mask = mask_binary[cy:cy2, cx:cx2]
+
+    effective_crop_bounds = (cx, cy, cw, ch, 1.0)
+
+    temp_crop_path = os.path.join(local_edit_dir, "crop_image.png")
+    temp_mask_path = os.path.join(local_edit_dir, "crop_mask.png")
+    from bridge_removal.image_utils import safe_imwrite
+    safe_imwrite(temp_crop_path, cropped_img)
+    safe_imwrite(temp_mask_path, cropped_mask)
+
+    api_key = merged_params.get("runninghub_api_key", "") or os.getenv("RUNNINGHUB_API_KEY", "")
+    if not api_key:
+        return api_error("config_error", "RunningHub API Key 未配置", 400)
+
+    _ensure_local_edit_webapp()
+
+    job_id = create_job_record(task_id, "LOCAL_EDIT_START", input_params)
+    app = current_app._get_current_object()
+
+    def _run():
+        temp_files = [temp_mask_path]
+        try:
+            with app.app_context():
+                update_job_status(job_id, "IN_PROGRESS")
+                from bridge_removal.inpaint_gen_Runninghub import run_webapp, TaskPollError, run_batch_with_pool, _aggregate_batch_results
+                batch_dir = os.path.join(local_edit_dir, "candidates")
+                if os.path.isdir(batch_dir):
+                    import shutil
+                    shutil.rmtree(batch_dir, ignore_errors=True)
+                os.makedirs(batch_dir, exist_ok=True)
+                args_list = []
+                for i in range(1, num_candidates + 1):
+                    out_path = os.path.join(batch_dir, f"{i}.png")
+                    params = {
+                        "image": temp_crop_path,
+                        "mask": temp_mask_path,
+                        "prompt": prompt or "移除桥梁恢复原始地面",
+                    }
+                    args_list.append((api_key, _LOCAL_EDIT_WEBAPP_NAME, params, out_path, job_id))
+                results, errors = run_batch_with_pool(run_webapp, args_list)
+                batch_id = job_id or str(uuid.uuid4())
+                success, payload = _aggregate_batch_results(batch_id, results, errors)
+                output_paths = [r for r in results if r]
+                result = {
+                    "step": {"name": "local_edit", "status": "completed" if success else "partial"},
+                    "artifacts": {
+                        "output_paths": output_paths,
+                        "crop_bounds": {"x": effective_crop_bounds[0], "y": effective_crop_bounds[1], "w": effective_crop_bounds[2], "h": effective_crop_bounds[3], "scale": effective_crop_bounds[4]},
+                        "original_image_path": image_path,
+                        "crop_image_path": temp_crop_path,
+                    }
+                }
+                if not success:
+                    update_job_status(job_id, "FAILED", error=str(payload.get("error_message", "BATCH_ALL_FAILED")), results=result)
+                    return
+                update_job_status(job_id, "COMPLETED", results=result)
+        except TaskPollError as e:
+            error_result = {"step": {"name": "local_edit", "status": "failed"}, "error": e.reason, "error_code": "CANCELLED" if e.status == "cancelled" else "TASK_FAILED"}
+            try:
+                with app.app_context():
+                    update_job_status(job_id, "FAILED", error=str(e.reason), results=error_result)
+            except Exception:
+                pass
+        except Exception as e:
+            logger.exception("Local edit failed for task %s", task_id)
+            error_result = {"step": {"name": "local_edit", "status": "failed"}, "error": str(e)}
+            try:
+                with app.app_context():
+                    update_job_status(job_id, "FAILED", error=str(e), results=error_result)
+            except Exception:
+                pass
+        finally:
+            for f in temp_files:
+                try:
+                    if os.path.isfile(f):
+                        os.unlink(f)
+                except OSError:
+                    pass
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    return api_accepted({"job_id": job_id, "task_id": task_id})
+
+
+@tasks_bp.route("/<task_id>/local-edit-status", methods=["GET"])
+@require_local_auth
+def local_edit_status(task_id: str):
+    job = find_latest_job_by_task(task_id, "LOCAL_EDIT_START")
+    if not job:
+        return api_ok({"status": "none", "outputPaths": []})
+    status = (job.get("status") or "").upper()
+    results = job.get("results") or {}
+    artifacts = results.get("artifacts") or {}
+    output_paths = artifacts.get("output_paths") or []
+    crop_bounds = artifacts.get("crop_bounds") or {}
+    original_image_path = artifacts.get("original_image_path") or ""
+    crop_image_path = artifacts.get("crop_image_path") or ""
+    error = results.get("error") or job.get("error") or ""
+    return api_ok({
+        "jobId": job.get("job_id", ""),
+        "status": status.lower() if status else "pending",
+        "outputPaths": output_paths,
+        "cropBounds": crop_bounds,
+        "originalImagePath": original_image_path,
+        "cropImagePath": crop_image_path,
+        "error": error,
+    })
+
+
+@tasks_bp.route("/<task_id>/local-edit-apply", methods=["POST"])
+@require_local_auth
+@require_permission("task:execute")
+@validate_body(LocalEditApplyBody)
+def local_edit_apply(task_id: str):
+    import cv2
+    body = get_validated_body()
+    job_id = body.get("job_id", "")
+    result_index = body.get("result_index", 0)
+    crop_bounds_str = body.get("crop_bounds", "")
+    original_image_path = body.get("original_image_path", "")
+
+    project = find_project_by_task_id(task_id)
+    if not project:
+        return api_error("not_found", "Task not found", 404)
+
+    if not job_id:
+        return api_error("bad_request", "job_id 不能为空", 400)
+
+    job = find_latest_job_by_task(task_id, "LOCAL_EDIT_START")
+    if not job:
+        return api_error("not_found", "Local edit job not found", 404)
+
+    results = job.get("results") or {}
+    artifacts = results.get("artifacts") or {}
+    output_paths = artifacts.get("output_paths") or []
+    job_crop_bounds = artifacts.get("crop_bounds") or {}
+    job_original = artifacts.get("original_image_path") or ""
+
+    if result_index < 0 or result_index >= len(output_paths):
+        return api_error("bad_request", f"结果索引无效: {result_index}", 400)
+
+    result_path = output_paths[result_index]
+    if not result_path or not os.path.isfile(result_path):
+        return api_error("bad_request", f"结果图像路径无效: {result_path}", 400)
+
+    if crop_bounds_str:
+        try:
+            parts = [int(v) for v in crop_bounds_str.split(",")]
+            if len(parts) == 4:
+                cb = {"x": parts[0], "y": parts[1], "w": parts[2], "h": parts[3], "scale": job_crop_bounds.get("scale", 1.0)}
+            else:
+                cb = job_crop_bounds
+        except (ValueError, TypeError):
+            cb = job_crop_bounds
+    else:
+        cb = job_crop_bounds
+
+    orig_path = original_image_path or job_original
+    if not orig_path or not os.path.isfile(orig_path):
+        return api_error("bad_request", f"原始影像路径无效: {orig_path}", 400)
+
+    result_img = cv2.imread(result_path)
+    if result_img is None:
+        return api_error("bad_request", "无法读取结果图像", 400)
+
+    original_img = cv2.imread(orig_path)
+    if original_img is None:
+        return api_error("bad_request", "无法读取原始影像", 400)
+
+    crop_x = int(cb.get("x", 0))
+    crop_y = int(cb.get("y", 0))
+    crop_w = int(cb.get("w", 0))
+    crop_h = int(cb.get("h", 0))
+    scale = float(cb.get("scale", 1.0))
+
+    if crop_w <= 0 or crop_h <= 0:
+        return api_error("bad_request", "裁剪范围无效", 400)
+
+    result_roi = cv2.resize(result_img, (crop_w, crop_h), interpolation=cv2.INTER_LINEAR)
+
+    orig_h, orig_w = original_img.shape[:2]
+    paste_x = max(0, min(crop_x, orig_w - 1))
+    paste_y = max(0, min(crop_y, orig_h - 1))
+    paste_x2 = min(crop_x + crop_w, orig_w)
+    paste_y2 = min(crop_y + crop_h, orig_h)
+    paste_w = paste_x2 - paste_x
+    paste_h = paste_y2 - paste_y
+
+    if paste_w <= 0 or paste_h <= 0:
+        return api_error("bad_request", "粘贴范围超出图像边界", 400)
+
+    blended = original_img.copy()
+    roi = result_roi[:paste_h, :paste_w]
+    blended[paste_y:paste_y2, paste_x:paste_x2] = roi
+
+    intermediate_path = _resolve_intermediate_path(project, project.get("input_params") or {})
+    local_edit_dir = os.path.join(intermediate_path, "local_edit")
+    os.makedirs(local_edit_dir, exist_ok=True)
+
+    orig_size_before = os.path.getsize(orig_path)
+    backup_path = os.path.join(local_edit_dir, f"backup_{uuid.uuid4().hex[:8]}_{os.path.basename(orig_path)}")
+    shutil.copy2(orig_path, backup_path)
+
+    from bridge_removal.image_utils import safe_imwrite
+    write_ok = safe_imwrite(orig_path, blended)
+    if not write_ok:
+        logger.error("safe_imwrite failed for %s after local edit apply", orig_path)
+        return api_error("internal_error", f"写入合并影像失败: {orig_path}", 500)
+
+    orig_size_after = os.path.getsize(orig_path)
+    mtime = os.path.getmtime(orig_path)
+    logger.info(
+        "local-edit-apply: overwrote %s (size %d->%d, mtime=%.1f, backup=%s)",
+        orig_path, orig_size_before, orig_size_after, mtime, backup_path,
+    )
+
+    return api_ok({
+        "task_id": task_id,
+        "result_path": orig_path,
+        "original_image_path": orig_path,
+        "backup_path": backup_path,
+        "mtime": mtime,
+        "status": "succeeded",
+    })
+
+
+@tasks_bp.route("/<task_id>/local-edit-file", methods=["GET"])
+@require_local_auth
+def local_edit_file(task_id: str):
+    from flask import send_file
+    path = request.args.get("path", "").strip()
+    if not path or not os.path.isfile(path):
+        return api_error("not_found", "File not found", 404)
+    mime = "image/tiff" if path.lower().endswith((".tif", ".tiff")) else "image/png"
+    return send_file(path, mimetype=mime)
 
 
 @tasks_bp.route("/<task_id>/merge-results", methods=["POST"])

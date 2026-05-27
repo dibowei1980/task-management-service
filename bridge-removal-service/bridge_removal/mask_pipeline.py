@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 from bridge_removal.extract_masks_pipeline import ExtractMasksPipeline
+from bridge_removal.image_utils import safe_imwrite as _safe_imwrite
 
 
 import logging
@@ -65,38 +66,6 @@ def _sam2_available() -> bool:
     except ImportError:
         pass
     return False
-
-
-def _safe_imwrite(path: str, img: np.ndarray) -> bool:
-    if img.ndim == 2:
-        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-    try:
-        success = cv2.imwrite(path, img)
-    except Exception as e:
-        logger.warning("cv2.imwrite exception for %s: %s", path, e)
-        success = False
-    if not success or not os.path.isfile(path):
-        logger.warning("cv2.imwrite failed for %s (success=%s, exists=%s), trying PIL fallback", path, success, os.path.isfile(path))
-        try:
-            from PIL import Image
-            if img.ndim == 2:
-                pil_img = Image.fromarray(img).convert("RGB")
-            elif img.shape[2] == 4:
-                pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGRA2RGBA))
-            elif img.shape[2] == 3:
-                pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-            else:
-                logger.warning("Unsupported image shape for PIL fallback: %s", img.shape)
-                return False
-            pil_img.save(path)
-            exists = os.path.isfile(path)
-            if not exists:
-                logger.warning("PIL.save also failed for %s", path)
-            return exists
-        except Exception as e:
-            logger.warning("PIL fallback also failed for %s: %s", path, e)
-            return False
-    return True
 
 
 def _ensure_dir(path: str) -> str:
@@ -235,7 +204,7 @@ def _overlay_mask(image: np.ndarray, mask: np.ndarray) -> np.ndarray:
     return cv2.addWeighted(base, 0.7, overlay, 0.3, 0)
 
 
-def generate_bridge_masks(segments_dir: str, output_dir: str, enable_shadow: bool = False) -> Dict[str, Any]:
+def generate_bridge_masks(segments_dir: str, output_dir: str, enable_shadow: bool = False, dilate_iterations: int = 2) -> Dict[str, Any]:
     _ensure_dir(output_dir)
     items = _load_segments(segments_dir)
     print("mask_pipline.py 149lines:Loaded segments:", items)
@@ -286,8 +255,8 @@ def generate_bridge_masks(segments_dir: str, output_dir: str, enable_shadow: boo
         else:
             shadow_mask = np.zeros_like(mask_cut)
             merged = mask_cut
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        merged = cv2.dilate(merged, kernel, iterations=2)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        merged = cv2.dilate(merged, kernel, iterations=dilate_iterations)
         overlay = _overlay_mask(img, merged)
         base = os.path.splitext(os.path.basename(json_path))[0]
         seg_output_dir = os.path.join(output_dir, base)
@@ -328,7 +297,7 @@ def generate_bridge_masks(segments_dir: str, output_dir: str, enable_shadow: boo
     return manifest
 
 
-def generate_bridge_masks_from_json(json_path: str, output_dir: str, enable_shadow: bool = False) -> Dict[str, Any]:
+def generate_bridge_masks_from_json(json_path: str, output_dir: str, enable_shadow: bool = False, dilate_iterations: int = 2) -> Dict[str, Any]:
     _ensure_dir(output_dir)
     manifest: Dict[str, Any] = {
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -378,8 +347,8 @@ def generate_bridge_masks_from_json(json_path: str, output_dir: str, enable_shad
     else:
         shadow_mask = np.zeros_like(mask_cut)
         merged = mask_cut
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    merged = cv2.dilate(merged, kernel, iterations=2)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    merged = cv2.dilate(merged, kernel, iterations=dilate_iterations)
     overlay = _overlay_mask(img, merged)
     base = os.path.splitext(os.path.basename(json_path))[0]
     seg_output_dir = os.path.join(output_dir, base)
@@ -437,10 +406,10 @@ def _normalize_batch_payload(payload: Dict[str, Any]) -> Optional[List[Dict[str,
     return None
 
 
-def run_mask_generation(task_id: str, input_params_text: str) -> Dict[str, Any]:
+def run_mask_generation(task_id: str, input_params_text: str, sam2_dilate_iterations: int = 2, light_expand_pixels: int = 0) -> Dict[str, Any]:
     payload_text = input_params_text if isinstance(input_params_text, str) else json.dumps(input_params_text, ensure_ascii=False)
     payload = json.loads(payload_text) if payload_text and payload_text.strip() else {}
-    pipeline = ExtractMasksPipeline()
+    pipeline = ExtractMasksPipeline(dilate_iterations=sam2_dilate_iterations, light_expand_pixels=light_expand_pixels)
     batch_items = _normalize_batch_payload(payload)
     if batch_items:
         results = []

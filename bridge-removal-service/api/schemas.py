@@ -140,6 +140,8 @@ class InpaintStartBody(BaseModel):
     removal_mask_path: str = Field(alias="removal_mask_path", default="", max_length=512)
     crop_mask_path: str = Field(alias="crop_mask_path", default="", max_length=512)
     count: int = Field(default=1, ge=1, le=8)
+    blur_radius: int = Field(alias="blur_radius", default=2, ge=0, le=20)
+    expand: int = Field(alias="expand", default=3, ge=0, le=50)
     previous_result_path: str = Field(alias="previous_result_path", default="", max_length=1024)
     previous_world_file_path: str = Field(alias="previous_world_file_path", default="", max_length=1024)
     current_world_file_path: str = Field(alias="current_world_file_path", default="", max_length=1024)
@@ -165,6 +167,26 @@ class SimulateBody(BaseModel):
     dom_dir: Optional[str] = Field(default=None, max_length=512)
     intermediate_root: Optional[str] = Field(alias="intermediateRoot", default=None, max_length=512)
     task_id: Optional[str] = Field(alias="taskId", default=None, max_length=64)
+
+
+class LocalEditStartBody(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    image_path: str = Field(alias="image_path", default="", max_length=1024)
+    mask_data: str = Field(alias="mask_data", default="", max_length=5242880)
+    prompt: str = Field(default="", max_length=2048)
+    num_candidates: int = Field(alias="num_candidates", default=1, ge=1, le=8)
+    crop_bounds: str = Field(alias="crop_bounds", default="", max_length=256)
+    input_params: Optional[Dict[str, Any]] = Field(alias="inputParams", default=None)
+
+
+class LocalEditApplyBody(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    job_id: str = Field(alias="job_id", default="", max_length=64)
+    result_index: int = Field(alias="result_index", default=0, ge=0)
+    crop_bounds: str = Field(alias="crop_bounds", default="", max_length=256)
+    original_image_path: str = Field(alias="original_image_path", default="", max_length=1024)
 
 
 def validate_body(schema_cls):

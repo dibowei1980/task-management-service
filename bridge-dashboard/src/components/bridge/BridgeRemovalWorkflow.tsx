@@ -267,7 +267,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
           continue;
         }
         try {
-          await bridgeTaskService.maskGenerate(task.id, { batch: batchItems, inputParams: { enable_shadow: enableShadow } });
+          await bridgeTaskService.maskGenerate(task.id, { batch: batchItems, inputParams: { enable_shadow: enableShadow, polygon_dilate_iterations: 2, sam2_dilate_iterations: 2 } });
           generated += batchItems.length;
         } catch {
           failed += batchItems.length;
@@ -611,7 +611,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
   );
 
   const renderView = (task: BridgeTask) => (
-    <button className="text-blue-600 hover:text-blue-900" type="button" onClick={() => navigate(`/tasks/${task.id}/locate?mode=edit`)}>
+    <button className="text-blue-600 hover:text-blue-900" type="button" onClick={() => navigate(`/tasks/${task.id}/locate`)}>
       查看
     </button>
   );

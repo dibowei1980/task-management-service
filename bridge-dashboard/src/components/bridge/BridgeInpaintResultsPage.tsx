@@ -14,7 +14,11 @@ type InpaintStatusPayload = {
   originalImagePath?: string;
 };
 
-function useBlobUrlMap(taskId: string, jobId: string) {
+function useBlobUrlMap(
+  taskId: string,
+  jobId: string,
+  loadFileFn?: (path: string) => Promise<{ data: ArrayBuffer }>,
+) {
   const [urlMap, setUrlMap] = useState<Map<string, string>>(new Map());
   const blobRefs = useRef<Set<string>>(new Set());
   const loadingRefs = useRef<Set<string>>(new Set());
@@ -25,12 +29,19 @@ function useBlobUrlMap(taskId: string, jobId: string) {
   }, [urlMap]);
 
   const loadBlobUrl = useCallback(async (path: string) => {
-    if (!taskId || !jobId || !path) return;
+    if (!path) return;
     if (urlMap.has(path) || loadingRefs.current.has(path)) return;
     loadingRefs.current.add(path);
     try {
-      const response = await bridgeTaskService.inpaintFile(taskId, jobId, path);
-      const blob = new Blob([response.data as ArrayBuffer], { type: 'image/png' });
+      let blob: Blob;
+      if (loadFileFn) {
+        const resp = await loadFileFn(path);
+        blob = new Blob([resp.data], { type: 'image/png' });
+      } else {
+        if (!taskId || !jobId) return;
+        const response = await bridgeTaskService.inpaintFile(taskId, jobId, path);
+        blob = new Blob([response.data as ArrayBuffer], { type: 'image/png' });
+      }
       const blobUrl = URL.createObjectURL(blob);
       blobRefs.current.add(blobUrl);
       setUrlMap(prev => {
@@ -42,7 +53,7 @@ function useBlobUrlMap(taskId: string, jobId: string) {
     } finally {
       loadingRefs.current.delete(path);
     }
-  }, [taskId, jobId, urlMap]);
+  }, [taskId, jobId, urlMap, loadFileFn]);
 
   useEffect(() => {
     return () => {
@@ -61,6 +72,13 @@ type BridgeInpaintResultsPageProps = {
   onClose?: () => void;
   onRetry?: () => void;
   onConfirmed?: () => void;
+  title?: string;
+  outputPaths?: string[];
+  originalPath?: string;
+  loadFileFn?: (path: string) => Promise<{ data: ArrayBuffer }>;
+  confirmFn?: (selectedIndex: number) => Promise<{ status?: string; error?: string }>;
+  retryLabel?: string;
+  confirmLabel?: string;
 };
 
 export const BridgeInpaintResultsPage: React.FC<BridgeInpaintResultsPageProps> = ({
@@ -70,6 +88,13 @@ export const BridgeInpaintResultsPage: React.FC<BridgeInpaintResultsPageProps> =
   onClose,
   onRetry,
   onConfirmed,
+  title: titleProp,
+  outputPaths: outputPathsProp,
+  originalPath: originalPathProp,
+  loadFileFn,
+  confirmFn,
+  retryLabel = '再次生成',
+  confirmLabel = '确认成果',
 }) => {
   const params = useParams();
   const [searchParams] = useSearchParams();
@@ -81,10 +106,10 @@ export const BridgeInpaintResultsPage: React.FC<BridgeInpaintResultsPageProps> =
   const [statusText, setStatusText] = useState<string>('加载中...');
   const [statusCode, setStatusCode] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [originalPath, setOriginalPath] = useState<string | null>(null);
-  const [outputPaths, setOutputPaths] = useState<string[]>([]);
+  const [internalOriginalPath, setInternalOriginalPath] = useState<string | null>(null);
+  const [internalOutputPaths, setInternalOutputPaths] = useState<string[]>([]);
   const [selectedIndex, setSelectedIndex] = useState<number>(0);
-  const { getBlobUrl, loadBlobUrl } = useBlobUrlMap(taskId, jobId);
+  const { getBlobUrl, loadBlobUrl } = useBlobUrlMap(taskId, jobId, loadFileFn);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [loadingAction, setLoadingAction] = useState(false);
@@ -97,11 +122,16 @@ export const BridgeInpaintResultsPage: React.FC<BridgeInpaintResultsPageProps> =
   const containerRef = useRef<HTMLDivElement | null>(null);
   const fitRef = useRef<string | null>(null);
 
+  const outputPaths = outputPathsProp ?? internalOutputPaths;
+  const originalPath = originalPathProp ?? internalOriginalPath;
+  const title = titleProp ?? '影像结果选择';
+
   useEffect(() => {
     setJobId(jobIdParam);
   }, [jobIdParam]);
 
   const refreshStatus = useCallback(async (currentJobId: string) => {
+    if (outputPathsProp || originalPathProp) return;
     if (!taskId || !currentJobId) return;
     try {
       const res = await bridgeTaskService.getInpaintStatus(taskId, currentJobId);
@@ -114,13 +144,13 @@ export const BridgeInpaintResultsPage: React.FC<BridgeInpaintResultsPageProps> =
         : [];
       const outputPath = typeof payload.outputPath === 'string' ? payload.outputPath : '';
       const nextOutputs = outputs.length ? outputs : (outputPath ? [outputPath] : []);
-      setOutputPaths(nextOutputs);
+      setInternalOutputPaths(nextOutputs);
       if (nextOutputs.length && selectedIndex >= nextOutputs.length) {
         setSelectedIndex(0);
       }
       const original = typeof payload.originalImagePath === 'string' ? payload.originalImagePath
         : (typeof payload.imagePath === 'string' ? payload.imagePath : null);
-      setOriginalPath(original);
+      setInternalOriginalPath(original);
       if (status === 'pending' || status === 'in_progress') {
         setStatusText('生成处理中...');
       } else if (status === 'succeeded' || status === 'completed') {
@@ -193,7 +223,7 @@ export const BridgeInpaintResultsPage: React.FC<BridgeInpaintResultsPageProps> =
       }
       setStatusCode(payload.status || 'pending');
       setStatusText('生成处理中...');
-      setOutputPaths([]);
+      setInternalOutputPaths([]);
       setSelectedIndex(0);
       setActionMessage('已触发再次生成');
     } catch {
@@ -209,8 +239,13 @@ export const BridgeInpaintResultsPage: React.FC<BridgeInpaintResultsPageProps> =
     setActionError(null);
     setActionMessage(null);
     try {
-      const res = await bridgeTaskService.confirmInpaintResult(taskId, jobId, selectedIndex);
-      const payload = res as { status?: string; resultPath?: string; error?: string };
+      let payload: { status?: string; resultPath?: string; error?: string };
+      if (confirmFn) {
+        payload = await confirmFn(selectedIndex);
+      } else {
+        const res = await bridgeTaskService.confirmInpaintResult(taskId, jobId, selectedIndex);
+        payload = res as { status?: string; resultPath?: string; error?: string };
+      }
       if (payload.status === 'succeeded') {
         setActionMessage('成果已确认并覆盖保存');
         if (onConfirmed) {
@@ -229,7 +264,7 @@ export const BridgeInpaintResultsPage: React.FC<BridgeInpaintResultsPageProps> =
     } finally {
       setLoadingAction(false);
     }
-  }, [canConfirm, taskId, jobId, selectedIndex, onConfirmed, onClose]);
+  }, [canConfirm, taskId, jobId, selectedIndex, onConfirmed, onClose, confirmFn]);
 
   const handleWheel = useCallback((event: WheelEvent) => {
     event.preventDefault();
@@ -313,8 +348,8 @@ export const BridgeInpaintResultsPage: React.FC<BridgeInpaintResultsPageProps> =
     transformOrigin: '0 0',
   }), [offset, scale]);
 
-  const originalUrl = taskId && jobId && originalPath ? getBlobUrl(originalPath) : '';
-  const resultUrl = taskId && jobId && selectedResult ? getBlobUrl(selectedResult) : '';
+  const originalUrl = originalPath ? getBlobUrl(originalPath) : '';
+  const resultUrl = selectedResult ? getBlobUrl(selectedResult) : '';
 
   useEffect(() => {
     if (!imageSize) return;
@@ -337,7 +372,7 @@ export const BridgeInpaintResultsPage: React.FC<BridgeInpaintResultsPageProps> =
       <div className="border-b bg-white px-6 py-4">
         <div className="flex items-center justify-between">
           <div>
-            <div className="text-lg font-semibold text-gray-800">影像结果选择</div>
+            <div className="text-lg font-semibold text-gray-800">{title}</div>
             <div className="text-sm text-gray-500">任务 {taskId} · {statusText}</div>
           </div>
           <div className="flex items-center gap-2">
@@ -354,14 +389,14 @@ export const BridgeInpaintResultsPage: React.FC<BridgeInpaintResultsPageProps> =
               disabled={!canRetry || loadingAction}
               onClick={handleRetry}
             >
-              再次生成
+              {retryLabel}
             </button>
             <button
               className="px-3 py-2 text-sm border rounded bg-blue-600 text-white border-blue-600 disabled:opacity-50"
               disabled={!canConfirm || loadingAction}
               onClick={handleConfirm}
             >
-              确认成果
+              {confirmLabel}
             </button>
           </div>
         </div>
@@ -379,7 +414,7 @@ export const BridgeInpaintResultsPage: React.FC<BridgeInpaintResultsPageProps> =
           <div className="text-sm font-medium text-gray-700">成果列表</div>
           <div className="grid grid-cols-2 md:grid-cols-1 lg:grid-cols-2 gap-3">
             {outputPaths.map((path, idx) => {
-              const url = taskId && jobId ? getBlobUrl(path) : '';
+              const url = getBlobUrl(path);
               const active = idx === selectedIndex;
               return (
                 <button

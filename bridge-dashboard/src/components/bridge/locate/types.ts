@@ -11,6 +11,7 @@ export type LocateItem = {
   bridgePolygonPx: Array<[number, number]> | null;
   centerlinePx?: Array<[number, number]> | null;
   centerPointPx?: [number, number] | null;
+  lightDirection?: [number, number] | null;
   impactPolygonPx?: Array<[number, number]> | null;
   predecessorBridgePolygonsPx?: Array<Array<[number, number]>> | null;
   predecessorImpactPolygonsPx?: Array<Array<[number, number]>> | null;

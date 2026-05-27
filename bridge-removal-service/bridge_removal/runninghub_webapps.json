@@ -1,0 +1,92 @@
+{
+  "version": "1.0",
+  "webapps": {
+    "bridge_removal": {
+      "webapp_id": "2029163935819108353",
+      "description": "桥梁移除修复 - QwenImage ControlNet Inpainting",
+      "nodes": {
+        "15": {
+          "label": "original_image",
+          "description": "原始影像",
+          "type": "file",
+          "required": true,
+          "upload": true
+        },
+        "37": {
+          "label": "removal_mask",
+          "description": "移除掩膜",
+          "type": "file",
+          "required": true,
+          "upload": true
+        },
+        "45": {
+          "label": "crop_mask",
+          "description": "裁剪掩膜",
+          "type": "file",
+          "required": true,
+          "upload": true
+        },
+        "70": {
+          "label": "seed",
+          "description": "随机种子",
+          "type": "string",
+          "required": false,
+          "default": ""
+        },
+        "73": {
+          "label": "blur_radius",
+          "description": "模糊像素",
+          "type": "integer",
+          "required": false,
+          "default": "2"
+        },
+        "74": {
+          "label": "expand",
+          "description": "外扩像素",
+          "type": "integer",
+          "required": false,
+          "default": "3"
+        }
+      },
+      "defaults": {
+        "seed": "",
+        "blur_radius": "2",
+        "expand": "3"
+      },
+      "queue_retry": 60,
+      "queue_retry_interval": 5.0
+    },
+    "bridge_local_edit": {
+      "webapp_id": "2058840264650874881",
+      "description": "局部修改图像生成",
+      "nodes": {
+        "17": {
+          "label": "image",
+          "description": "原始影像",
+          "type": "image",
+          "required": true,
+          "upload": true
+        },
+        "12": {
+          "label": "mask",
+          "description": "修改区域",
+          "type": "image",
+          "required": true,
+          "upload": true
+        },
+        "18": {
+          "label": "prompt",
+          "description": "提示词",
+          "type": "text",
+          "required": true,
+          "default": "移除房屋恢复原始地面"
+        }
+      },
+      "defaults": {
+        "prompt": "移除房屋恢复原始地面"
+      },
+      "queue_retry": 3,
+      "queue_retry_interval": 5.0
+    }
+  }
+}

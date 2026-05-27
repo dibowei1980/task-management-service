@@ -264,16 +264,17 @@ class ShadowDetector:
     
     def filter_shadow_by_side_length(self, shadow_mask, split_labels, centerlines):
         """
-        计算桥梁中心线两侧的阴影总长度，保留长度大的一侧
+        计算桥梁中心线两侧的阴影总长度，保留长度大的一侧，并计算光照方向矢量
+        光照方向 = 从中心线指向阴影侧的法向量（保留侧的法向量均值）
         """
         if centerlines is None or len(centerlines) < 2:
-            return shadow_mask, split_labels
+            return shadow_mask, split_labels, None, None
 
         try:
             from scipy.spatial import cKDTree
         except ImportError:
             print("无法导入scipy.spatial.cKDTree，跳过两侧长度过滤")
-            return shadow_mask, split_labels
+            return shadow_mask, split_labels, None, None
             
         # 1. 准备中心线数据
         # 确保形状为 (N, 2)
@@ -367,8 +368,30 @@ class ShadowDetector:
         
         shadow_mask[mask_to_remove] = 0
         split_labels[mask_to_remove] = 0
-        
-        return shadow_mask, split_labels, removed_part
+
+        # 计算光照方向矢量 = 从中心线指向阴影侧（保留侧）的法向量均值
+        light_direction = None
+        kept_side = 'a' if len_a >= len_b else 'b'
+        kept_indices = idx_side_a if kept_side == 'a' else idx_side_b
+        if len(kept_indices) > 0:
+            kept_nearest = nearest_indices[kept_indices]
+            kept_tangents = tangents[kept_nearest]
+            t_norms = np.linalg.norm(kept_tangents, axis=1, keepdims=True)
+            t_norms = np.where(t_norms == 0, 1, t_norms)
+            kept_tangents_normed = kept_tangents / t_norms
+            kept_cross = cross_products[kept_indices]
+            side_sign = np.sign(kept_cross)
+            side_sign = np.where(side_sign == 0, 1, side_sign)
+            perp_x = -kept_tangents_normed[:, 1] * side_sign
+            perp_y = kept_tangents_normed[:, 0] * side_sign
+            perp_vecs = np.column_stack([perp_x, perp_y])
+            mean_dir = np.mean(perp_vecs, axis=0)
+            norm = np.linalg.norm(mean_dir)
+            if norm > 0:
+                light_direction = mean_dir / norm
+            print(f"       光照方向矢量: {light_direction}")
+
+        return shadow_mask, split_labels, removed_part, light_direction
 
     def post_process_with_bridge_mask(self, shadow_mask, bridge_mask_path, json_path=None):
         """
@@ -386,12 +409,12 @@ class ShadowDetector:
         """
         if not os.path.exists(bridge_mask_path):
             print(f"警告: 未找到桥梁主体掩膜 {bridge_mask_path}，跳过后处理。")
-            return shadow_mask, np.zeros_like(shadow_mask), None, None, None
+            return shadow_mask, np.zeros_like(shadow_mask), None, None, None, None
             
         bridge_mask = cv2.imread(bridge_mask_path, cv2.IMREAD_GRAYSCALE)
         if bridge_mask is None:
             print(f"警告: 无法读取桥梁主体掩膜 {bridge_mask_path}，跳过后处理。")
-            return shadow_mask, np.zeros_like(shadow_mask), None, None, None
+            return shadow_mask, np.zeros_like(shadow_mask), None, None, None, None
             
         # 确保尺寸一致
         if bridge_mask.shape != shadow_mask.shape:
@@ -424,7 +447,7 @@ class ShadowDetector:
         
         if num_labels_eroded <= 1:
             print("所有阴影在收缩后均消失，判定为无效。")
-            return np.zeros_like(shadow_mask), shadow_eroded, None, None, None
+            return np.zeros_like(shadow_mask), shadow_eroded, None, None, None, None
 
         # 步骤B: 分水岭分割 (Watershed)
         # 准备 markers: 
@@ -465,7 +488,7 @@ class ShadowDetector:
         
         if len(valid_labels) == 0:
             print("没有阴影块与桥梁连接。")
-            return np.zeros_like(shadow_mask), shadow_eroded, None, None, None
+            return np.zeros_like(shadow_mask), shadow_eroded, None, None, None, None
             
         # 步骤D: 重建最终掩膜
         final_mask = np.isin(markers, valid_labels).astype(np.uint8) * 255
@@ -516,7 +539,7 @@ class ShadowDetector:
             
             # --- 新增过滤逻辑：计算两侧长度，保留大的一侧 ---
             print("步骤H: 计算两侧阴影长度并过滤...")
-            final_mask, split_labels, removed_by_side = self.filter_shadow_by_side_length(final_mask, split_labels, centerlines)
+            final_mask, split_labels, removed_by_side, light_direction = self.filter_shadow_by_side_length(final_mask, split_labels, centerlines)
             
             # 合并被滤除的部分
             removed_shadow_mask = cv2.bitwise_or(removed_shadow_mask, removed_by_side)
@@ -526,14 +549,14 @@ class ShadowDetector:
             final_mask = cv2.dilate(final_mask, kernel_dilate_final, iterations=1)
             
             # 用户要求“以不同颜色显示分割后的阴影”，这暗示我们需要保留 split_labels
-            return final_mask, shadow_eroded, shadow_centerlines_img, split_labels, removed_shadow_mask
+            return final_mask, shadow_eroded, shadow_centerlines_img, split_labels, removed_shadow_mask, light_direction
         
         # 步骤E (Fallback): 如果没有JSON，对整体进行膨胀
         kernel_dilate_final = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
         final_mask = cv2.dilate(final_mask, kernel_dilate_final, iterations=1)
         
         # 如果没有JSON，返回空的中心线和标签
-        return final_mask, shadow_eroded, None, None, None
+        return final_mask, shadow_eroded, None, None, None, None
 
     def parse_json_centerline(self, json_path, img_shape):
         """
@@ -837,9 +860,10 @@ class ShadowDetector:
             print(f"步骤4.5: 基于桥梁主体掩膜的后处理 (Mask: {os.path.basename(bridge_mask_path)})...")
             if json_path:
                 print(f"        关联JSON文件: {os.path.basename(json_path)}")
-            shadow_mask, shadow_eroded, centerlines, split_labels, removed_shadow_mask = self.post_process_with_bridge_mask(shadow_mask, bridge_mask_path, json_path)
+            shadow_mask, shadow_eroded, centerlines, split_labels, removed_shadow_mask, light_direction = self.post_process_with_bridge_mask(shadow_mask, bridge_mask_path, json_path)
         else:
-            shadow_eroded = np.zeros_like(shadow_mask) # 如果没有后处理，就没有收缩图
+            shadow_eroded = np.zeros_like(shadow_mask)
+            light_direction = None
             
         # 步骤5: 生成最终结果图像（在原图上叠加阴影）
         print("步骤5: 叠加阴影区域...")
@@ -860,7 +884,7 @@ class ShadowDetector:
         if np.any(mask_indices):
             final_result[mask_indices] = cv2.addWeighted(rgb_image[mask_indices], 1-alpha, red_mask[mask_indices], alpha, 0)
         
-        return shadow_mask, stretched_feature, pcnn_raw_output*255, final_result, shadow_eroded, centerlines, split_labels, removed_shadow_mask
+        return shadow_mask, stretched_feature, pcnn_raw_output*255, final_result, shadow_eroded, centerlines, split_labels, removed_shadow_mask, light_direction
     
     def visualize_results(self, original, shadow_mask, stretched_feature, binary_result, final_result, shadow_eroded, bridge_mask_path=None, centerlines=None, split_labels=None, removed_shadow_mask=None, save_path=None):
         """

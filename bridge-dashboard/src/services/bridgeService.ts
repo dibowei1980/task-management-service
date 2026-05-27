@@ -186,6 +186,40 @@ export const bridgeTaskService = {
     return response.data;
   },
 
+  localEditStart: async (taskId: string, payload: {
+    image_path: string;
+    mask_data: string;
+    prompt: string;
+    num_candidates: number;
+    crop_bounds: string;
+  }) => {
+    const response = await bridgeApi.post(`/api/v1/tasks/${taskId}/local-edit-start`, payload);
+    return response.data;
+  },
+
+  localEditStatus: async (taskId: string) => {
+    const response = await bridgeApi.get(`/api/v1/tasks/${taskId}/local-edit-status`);
+    return response.data;
+  },
+
+  localEditApply: async (taskId: string, payload: {
+    job_id: string;
+    result_index: number;
+    crop_bounds: string;
+    original_image_path: string;
+  }) => {
+    const response = await bridgeApi.post(`/api/v1/tasks/${taskId}/local-edit-apply`, payload);
+    return response.data;
+  },
+
+  localEditFile: async (taskId: string, path: string) => {
+    const response = await bridgeApi.get(`/api/v1/tasks/${taskId}/local-edit-file`, {
+      params: { path },
+      responseType: 'arraybuffer',
+    });
+    return response;
+  },
+
   updateWorkflowStatus: async (taskId: string, body: {
     workflowStatus: string;
     commentStage?: string;
@@ -217,7 +251,16 @@ export const bridgeTaskService = {
 
 export type UserSettings = {
   enableShadow: boolean;
+  polygonDilateIterations: number;
+  sam2DilateIterations: number;
+  sam2LightExpandPixels: number;
   inpaintCount: number;
+  blurRadius: number;
+  expandPixels: number;
+  localEditTool: 'brush' | 'erase' | 'polygon';
+  localEditBrushSize: number;
+  localEditPrompt: string;
+  localEditNumCandidates: number;
 };
 
 export const bridgeSettingsService = {

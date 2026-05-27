@@ -7,6 +7,7 @@ import { logger } from '../../utils/logger';
 import { toast } from '../common/Toast';
 import { useConfirm } from '../common/useConfirm';
 import { BridgeInpaintResultsPage } from './BridgeInpaintResultsPage';
+import { LocalEditPanel } from './LocalEditPanel';
 import { buildMaskPath, buildMaskCutPath } from '../../utils/pathBuilders';
 import type { LocateItem, DomLocateResponse, PreprocessSegmentsResponse, LoadedTile, ViewState } from './locate/types';
 import { basename, normalizePath, isTiffPath, decodeTiffToRgba, createBitmapFromRgba, createBitmapFromImageBuffer, computeBoundsWorld, pixelToWorld, worldToPixel, pointInPolygon, fitToBounds, clamp, loadDisplayTogglePrefs, loadMaskUiPrefs, DISPLAY_TOGGLE_STORAGE_KEY, MASK_UI_STORAGE_KEY } from './locate/utils';
@@ -36,7 +37,8 @@ export const BridgeTaskLocatePage: React.FC = () => {
   const [, setMaskGenerateSuccess] = useState<string | null>(null);
   const [enableShadow, setEnableShadow] = useState(false);
   const [inpaintCount, setInpaintCount] = useState(1);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [blurRadius, setBlurRadius] = useState(2);
+  const [expandPixels, setExpandPixels] = useState(3);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [runStatus, setRunStatus] = useState<string | null>(null);
   const [inpaintRunning, setInpaintRunning] = useState(false);
@@ -78,9 +80,10 @@ export const BridgeTaskLocatePage: React.FC = () => {
   const [domIndex, setDomIndex] = useState(0);
   const [loadSeq, setLoadSeq] = useState(0);
   const [editMask, setEditMask] = useState(false);
-  const [viewMode, setViewMode] = useState<'dom' | 'segment' | 'segment_result' | 'merged_result'>(editByQuery ? 'segment' : 'dom');
+  const [viewMode, setViewMode] = useState<'dom' | 'segment' | 'segment_result' | 'merged_result'>(editByQuery ? 'segment' : 'segment_result');
   const [showBridgeRange, setShowBridgeRange] = useState(initialDisplayPrefs?.showBridgeRange ?? true);
   const [showCenterline, setShowCenterline] = useState(initialDisplayPrefs?.showCenterline ?? true);
+  const [showLightDirection, setShowLightDirection] = useState(initialDisplayPrefs?.showLightDirection ?? true);
   const [showImpactRange, setShowImpactRange] = useState(initialDisplayPrefs?.showImpactRange ?? false);
   const [showMask, setShowMask] = useState(initialDisplayPrefs?.showMask ?? false);
   const [displayMenuOpen, setDisplayMenuOpen] = useState(false);
@@ -89,6 +92,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
   const [compareLoadSeq, setCompareLoadSeq] = useState(0);
   const [mergedSwipeEnabled, setMergedSwipeEnabled] = useState(false);
   const [mergedSwipeRatio, setMergedSwipeRatio] = useState(0.5);
+  const [localEditActive, setLocalEditActive] = useState(false);
   const [view, setView] = useState<ViewState>({ scale: 1, offsetX: 0, offsetY: 0 });
   const [worldBounds, setWorldBounds] = useState<{ minX: number; minY: number; maxX: number; maxY: number } | null>(null);
 
@@ -127,6 +131,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
   const maskEditCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const maskCutEditCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const maskOverlayFrameRef = useRef<number | null>(null);
+  const skipResetRef = useRef(false);
   const maskToolRef = useRef<'brush' | 'polygon' | 'erase'>('brush');
   const brushSizeRef = useRef(24);
   const maskDrawingRef = useRef(false);
@@ -141,7 +146,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
   const segmentItems = useMemo(() => segments.filter(item => item.kind !== 'segment_result' && item.kind !== 'merged_result'), [segments]);
   const segmentResultItems = useMemo(() => segments.filter(item => item.kind === 'segment_result'), [segments]);
   const mergedResultItems = useMemo(() => segments.filter(item => item.kind === 'merged_result'), [segments]);
-  const canUseMergedSwipe = useMemo(() => viewMode === 'merged_result' && segmentItems.length > 0, [viewMode, segmentItems]);
+  const canUseMergedSwipe = useMemo(() => (viewMode === 'merged_result' || viewMode === 'segment_result') && segmentItems.length > 0, [viewMode, segmentItems]);
   const allSegmentResultsReady = useMemo(() => {
     if (!segmentItems.length) return false;
     return segmentItems.every(item => !!item.resultConfirmed);
@@ -173,6 +178,8 @@ export const BridgeTaskLocatePage: React.FC = () => {
       if (disposed) return;
       if (typeof s.enableShadow === 'boolean') setEnableShadow(s.enableShadow);
       if (typeof s.inpaintCount === 'number' && s.inpaintCount >= 1 && s.inpaintCount <= 8) setInpaintCount(s.inpaintCount);
+      if (typeof s.blurRadius === 'number' && s.blurRadius >= 0 && s.blurRadius <= 20) setBlurRadius(s.blurRadius);
+      if (typeof s.expandPixels === 'number' && s.expandPixels >= 0 && s.expandPixels <= 50) setExpandPixels(s.expandPixels);
       setSettingsLoaded(true);
     }).catch(() => {
       setSettingsLoaded(true);
@@ -198,13 +205,14 @@ export const BridgeTaskLocatePage: React.FC = () => {
       localStorage.setItem(DISPLAY_TOGGLE_STORAGE_KEY, JSON.stringify({
         showBridgeRange,
         showCenterline,
+        showLightDirection,
         showImpactRange,
         showMask,
       }));
     } catch {
       return;
     }
-  }, [showBridgeRange, showCenterline, showImpactRange, showMask]);
+  }, [showBridgeRange, showCenterline, showLightDirection, showImpactRange, showMask]);
 
   useEffect(() => {
     try {
@@ -273,6 +281,14 @@ export const BridgeTaskLocatePage: React.FC = () => {
       setSegments(expanded);
       if (editByQuery && list.length > 0) {
         setDomIndex(0);
+      }
+      if (!editByQuery) {
+        const hasResults = expanded.some(item => item.kind === 'segment_result');
+        const hasMerged = expanded.some(item => item.kind === 'merged_result');
+        if (!hasResults && hasMerged) {
+          setViewMode('merged_result');
+          setDomIndex(0);
+        }
       }
       if (!list.length) {
         const hint = d?.manifestPresent ? (d?.manifestError ? `分段生成失败：${d.manifestError}` : '任务已记录分段清单但无 segments') : '任务未生成 segments 或无权限访问';
@@ -367,9 +383,18 @@ export const BridgeTaskLocatePage: React.FC = () => {
     setMaskSaveError(null);
     setMaskSaveSuccess(null);
     setMaskToast(null);
+    let polygonDilateIterations = 2;
+    let sam2DilateIterations = 2;
+    let sam2LightExpandPixels = 1;
+    try {
+      const s = await bridgeSettingsService.getSettings();
+      if (typeof s.polygonDilateIterations === 'number' && s.polygonDilateIterations >= 0 && s.polygonDilateIterations <= 10) polygonDilateIterations = s.polygonDilateIterations;
+      if (typeof s.sam2DilateIterations === 'number' && s.sam2DilateIterations >= 0 && s.sam2DilateIterations <= 10) sam2DilateIterations = s.sam2DilateIterations;
+      if (typeof s.sam2LightExpandPixels === 'number' && s.sam2LightExpandPixels >= 0 && s.sam2LightExpandPixels <= 20) sam2LightExpandPixels = s.sam2LightExpandPixels;
+    } catch { /* use default */ }
     bridgeApi.post(`/api/v1/tasks/${taskId}/mask-generate`, {
       segment_json_path: target.jsonPath,
-      inputParams: { enable_shadow: enableShadow },
+      inputParams: { enable_shadow: enableShadow, polygon_dilate_iterations: polygonDilateIterations, sam2_dilate_iterations: sam2DilateIterations, sam2_light_expand_pixels: sam2LightExpandPixels },
     }).then(res => {
       const data = res.data as { maskManifest?: { artifacts?: { segmentCount?: number }; error?: unknown; segments?: Array<Record<string, unknown>> } } | null;
       const manifest = data && typeof data === 'object' ? data.maskManifest : null;
@@ -532,14 +557,13 @@ export const BridgeTaskLocatePage: React.FC = () => {
   }, [viewMode]);
 
   useEffect(() => {
-    if (!taskId || !editByQuery) {
+    if (!taskId) {
       setSegments([]);
       setSegmentsLoading(false);
       setSegmentsError(null);
       setViewMode('dom');
       return;
     }
-    setViewMode('segment');
     setDomIndex(0);
     reloadSegments().catch(() => undefined);
   }, [taskId, editByQuery, reloadSegments]);
@@ -922,13 +946,27 @@ export const BridgeTaskLocatePage: React.FC = () => {
       if (!ok) return;
       await triggerMaskSave();
     }
+    let currentBlurRadius = blurRadius;
+    let currentExpandPixels = expandPixels;
+    let currentInpaintCount = inpaintCount;
+    try {
+      const s = await bridgeSettingsService.getSettings();
+      if (typeof s.blurRadius === 'number' && s.blurRadius >= 0 && s.blurRadius <= 20) currentBlurRadius = s.blurRadius;
+      if (typeof s.expandPixels === 'number' && s.expandPixels >= 0 && s.expandPixels <= 50) currentExpandPixels = s.expandPixels;
+      if (typeof s.inpaintCount === 'number' && s.inpaintCount >= 1 && s.inpaintCount <= 8) currentInpaintCount = s.inpaintCount;
+      setBlurRadius(currentBlurRadius);
+      setExpandPixels(currentExpandPixels);
+      setInpaintCount(currentInpaintCount);
+    } catch { /* use local fallback */ }
     const payload: Record<string, string> = {
       segment_json_path: target.jsonPath,
       image_path: target.path,
     };
-    if (inpaintCount > 1) {
-      payload.count = String(inpaintCount);
+    if (currentInpaintCount > 1) {
+      payload.count = String(currentInpaintCount);
     }
+    payload.blur_radius = String(currentBlurRadius);
+    payload.expand = String(currentExpandPixels);
     const maskPath = buildMaskPath(target.jsonPath, target.path, target);
     if (maskPath) {
       payload.removal_mask_path = maskPath;
@@ -1323,6 +1361,10 @@ export const BridgeTaskLocatePage: React.FC = () => {
       tilesRef.current = [];
       return;
     }
+    const prevItems = tilesRef.current.map(t => t.item);
+    const sameItems = items.length === prevItems.length
+      && items.every((d, i) => d.path === prevItems[i]?.path && d.fileUrl === prevItems[i]?.fileUrl);
+    if (sameItems) return;
     const init: LoadedTile[] = items.map(d => ({
       item: d,
       status: 'idle',
@@ -1346,18 +1388,44 @@ export const BridgeTaskLocatePage: React.FC = () => {
       compareTilesRef.current = [];
       return;
     }
-    const init: LoadedTile[] = segmentItems.map(d => ({
-      item: d,
-      status: 'idle',
-      width: d.width || 512,
-      height: d.height || 512,
-      bitmap: null,
-      boundsWorld: null,
-    }));
-    setCompareTiles(init);
-    compareTilesRef.current = init;
-    setCompareLoadSeq(v => v + 1);
-  }, [canUseMergedSwipe, mergedSwipeEnabled, segmentItems]);
+    if (viewMode === 'segment_result') {
+      const currentResult = segmentResultItems[domIndex];
+      if (!currentResult) {
+        setCompareTiles([]);
+        compareTilesRef.current = [];
+        return;
+      }
+      const matchSeg = segmentItems.find(s => s.segmentId === currentResult.segmentId);
+      if (!matchSeg) {
+        setCompareTiles([]);
+        compareTilesRef.current = [];
+        return;
+      }
+      const init: LoadedTile[] = [{
+        item: matchSeg,
+        status: 'idle',
+        width: matchSeg.width || 512,
+        height: matchSeg.height || 512,
+        bitmap: null,
+        boundsWorld: null,
+      }];
+      setCompareTiles(init);
+      compareTilesRef.current = init;
+      setCompareLoadSeq(v => v + 1);
+    } else {
+      const init: LoadedTile[] = segmentItems.map(d => ({
+        item: d,
+        status: 'idle',
+        width: d.width || 512,
+        height: d.height || 512,
+        bitmap: null,
+        boundsWorld: null,
+      }));
+      setCompareTiles(init);
+      compareTilesRef.current = init;
+      setCompareLoadSeq(v => v + 1);
+    }
+  }, [canUseMergedSwipe, mergedSwipeEnabled, segmentItems, viewMode, segmentResultItems, domIndex]);
 
   useEffect(() => {
     compareTilesRef.current = compareTiles;
@@ -1520,6 +1588,10 @@ export const BridgeTaskLocatePage: React.FC = () => {
 
   useEffect(() => {
     if (!worldBounds) return;
+    if (skipResetRef.current) {
+      skipResetRef.current = false;
+      return;
+    }
     resetView();
   }, [worldBounds, resetView]);
 
@@ -1559,8 +1631,8 @@ export const BridgeTaskLocatePage: React.FC = () => {
         if (!tfw) return;
         target.setTransform(
           scale * tfw.a,
-          scale * tfw.b,
           -scale * tfw.d,
+          scale * tfw.b,
           -scale * tfw.e,
           scale * tfw.c + offsetX,
           -scale * tfw.f + offsetY,
@@ -1568,7 +1640,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
         target.drawImage(t.bitmap, 0, 0);
       };
 
-      if (viewMode === 'merged_result' && mergedSwipeEnabled && compareTiles.length) {
+      if ((viewMode === 'merged_result' || viewMode === 'segment_result') && mergedSwipeEnabled && compareTiles.length) {
         for (const t of tiles) {
           drawTileRaster(ctx, t);
         }
@@ -1601,8 +1673,8 @@ export const BridgeTaskLocatePage: React.FC = () => {
         const tfw = selected.tfw;
         mctx.setTransform(
           scale * tfw.a,
-          scale * tfw.b,
           -scale * tfw.d,
+          scale * tfw.b,
           -scale * tfw.e,
           scale * tfw.c + offsetX,
           -scale * tfw.f + offsetY,
@@ -1678,7 +1750,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
         octx.fill();
       };
 
-      if (viewMode === 'merged_result') {
+      if (viewMode === 'merged_result' || viewMode === 'segment_result') {
         for (const seg of segmentItems) {
           if (!seg.tfw) continue;
           if (showBridgeRange && Array.isArray(seg.bridgePolygonPx)) {
@@ -1700,6 +1772,42 @@ export const BridgeTaskLocatePage: React.FC = () => {
           if (showCenterline && seg.centerPointPx) {
             const wp = pixelToWorld(seg.tfw, seg.centerPointPx);
             if (wp) drawPointWorldCoords(wp, '#ef4444', 4);
+          }
+          if (showLightDirection && seg.lightDirection && seg.centerPointPx) {
+            const wp = pixelToWorld(seg.tfw, seg.centerPointPx);
+            if (wp && seg.tfw) {
+              const [dx, dy] = seg.lightDirection;
+              const a = seg.tfw.a ?? 1;
+              const b = seg.tfw.b ?? 0;
+              const d = seg.tfw.d ?? 0;
+              const e = seg.tfw.e ?? 1;
+              const wdx = a * dx + b * dy;
+              const wdy = d * dx + e * dy;
+              const wLen = Math.sqrt(wdx * wdx + wdy * wdy);
+              const nwdx = wLen > 0 ? wdx / wLen : 0;
+              const nwdy = wLen > 0 ? wdy / wLen : 0;
+              const arrowLen = Math.max(30, Math.min(80, (wp[0] * scale + offsetX) * 0.1));
+              const sx = wp[0] * scale + offsetX;
+              const sy = -wp[1] * scale + offsetY;
+              const ex = sx + nwdx * arrowLen;
+              const ey = sy - nwdy * arrowLen;
+              octx.beginPath();
+              octx.moveTo(sx, sy);
+              octx.lineTo(ex, ey);
+              octx.strokeStyle = '#facc15';
+              octx.lineWidth = 3;
+              octx.setLineDash([]);
+              octx.stroke();
+              const headLen = 10;
+              const angle = Math.atan2(ey - sy, ex - sx);
+              octx.beginPath();
+              octx.moveTo(ex, ey);
+              octx.lineTo(ex - headLen * Math.cos(angle - Math.PI / 6), ey - headLen * Math.sin(angle - Math.PI / 6));
+              octx.lineTo(ex - headLen * Math.cos(angle + Math.PI / 6), ey - headLen * Math.sin(angle + Math.PI / 6));
+              octx.closePath();
+              octx.fillStyle = '#facc15';
+              octx.fill();
+            }
           }
           if (showImpactRange && Array.isArray(seg.impactPolygonPx)) {
             const worldPts: Array<[number, number]> = [];
@@ -1746,6 +1854,41 @@ export const BridgeTaskLocatePage: React.FC = () => {
           octx.beginPath();
           octx.arc(x, y, radius, 0, Math.PI * 2);
           octx.fillStyle = color;
+          octx.fill();
+        };
+        const drawLightDirectionArrow = (centerPx: [number, number], dir: [number, number]) => {
+          const wp = pixelToWorld(tfw, centerPx);
+          if (!wp) return;
+          const [dx, dy] = dir;
+          const a = tfw.a ?? 1;
+          const b = tfw.b ?? 0;
+          const d = tfw.d ?? 0;
+          const e = tfw.e ?? 1;
+          const wdx = a * dx + b * dy;
+          const wdy = d * dx + e * dy;
+          const wLen = Math.sqrt(wdx * wdx + wdy * wdy);
+          const nwdx = wLen > 0 ? wdx / wLen : 0;
+          const nwdy = wLen > 0 ? wdy / wLen : 0;
+          const arrowLen = Math.max(30, Math.min(80, (wp[0] * scale + offsetX) * 0.1));
+          const sx = wp[0] * scale + offsetX;
+          const sy = -wp[1] * scale + offsetY;
+          const ex = sx + nwdx * arrowLen;
+          const ey = sy - nwdy * arrowLen;
+          octx.beginPath();
+          octx.moveTo(sx, sy);
+          octx.lineTo(ex, ey);
+          octx.strokeStyle = '#facc15';
+          octx.lineWidth = 3;
+          octx.setLineDash([]);
+          octx.stroke();
+          const headLen = 10;
+          const angle = Math.atan2(ey - sy, ex - sx);
+          octx.beginPath();
+          octx.moveTo(ex, ey);
+          octx.lineTo(ex - headLen * Math.cos(angle - Math.PI / 6), ey - headLen * Math.sin(angle - Math.PI / 6));
+          octx.lineTo(ex - headLen * Math.cos(angle + Math.PI / 6), ey - headLen * Math.sin(angle + Math.PI / 6));
+          octx.closePath();
+          octx.fillStyle = '#facc15';
           octx.fill();
         };
         const drawLabelForPolygon = (pointsPx: Array<[number, number]>, name: string, color: string) => {
@@ -1810,6 +1953,10 @@ export const BridgeTaskLocatePage: React.FC = () => {
             }
           }
         }
+
+        if (showLightDirection && viewMode === 'segment' && i === domIndex && t.item.lightDirection && t.item.centerPointPx) {
+          drawLightDirectionArrow(t.item.centerPointPx, t.item.lightDirection);
+        }
         
         if (showImpactRange) {
           if (Array.isArray(t.item.predecessorImpactPolygonsPx)) {
@@ -1852,7 +1999,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
     };
 
     draw();
-  }, [tiles, compareTiles, mergedSwipeEnabled, mergedSwipeRatio, view, showBridgeRange, showImpactRange, showCenterline, viewMode, domIndex, showMask, maskOverlayBitmap, selected, isEditingMask, polygonPoints, polygonHover, segmentItems]);
+  }, [tiles, compareTiles, mergedSwipeEnabled, mergedSwipeRatio, view, showBridgeRange, showImpactRange, showCenterline, showLightDirection, viewMode, domIndex, showMask, maskOverlayBitmap, selected, isEditingMask, polygonPoints, polygonHover, segmentItems]);
 
   const headerTitle = useMemo(() => {
     if (taskName) return taskName;
@@ -1889,80 +2036,6 @@ export const BridgeTaskLocatePage: React.FC = () => {
           </div>
         </div>
         <div className="flex items-center gap-2 relative z-[10000]">
-          {showMask && viewMode === 'segment' && (
-            <div className="inline-flex items-center gap-2 px-3 py-2 text-sm border rounded bg-white">
-              <span>透明度</span>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                value={Math.round(maskOpacity * 100)}
-                onChange={e => setMaskOpacity(Number(e.target.value) / 100)}
-              />
-              <span>{Math.round(maskOpacity * 100)}%</span>
-            </div>
-          )}
-          {showMask && (
-            <button
-              className={`px-3 py-2 text-sm border rounded disabled:opacity-50 ${editMask ? 'bg-blue-600 text-white border-blue-600' : ''}`}
-              onClick={() => setEditMask(v => !v)}
-            >
-              掩膜编辑
-            </button>
-          )}
-          <button
-            className="px-3 py-2 text-sm border rounded bg-white hover:bg-gray-50"
-            type="button"
-            onClick={() => setSettingsOpen(true)}
-          >
-            ⚙ 设置
-          </button>
-          <div className="relative" ref={displayMenuRef}>
-            <button
-              className="list-none cursor-pointer px-3 py-2 text-sm border rounded bg-white"
-              type="button"
-              onClick={() => setDisplayMenuOpen(v => !v)}
-            >
-              显示开关
-            </button>
-            {displayMenuOpen && (
-              <div className="absolute right-0 mt-2 w-48 rounded border bg-white shadow z-[10001]">
-                <label className="flex items-center gap-2 px-3 py-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={showBridgeRange}
-                    onChange={e => setShowBridgeRange(e.target.checked)}
-                  />
-                  桥梁范围
-                </label>
-                <label className="flex items-center gap-2 px-3 py-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={showCenterline}
-                    onChange={e => setShowCenterline(e.target.checked)}
-                  />
-                  中心线
-                </label>
-                <label className="flex items-center gap-2 px-3 py-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={showImpactRange}
-                    onChange={e => setShowImpactRange(e.target.checked)}
-                  />
-                  影响范围
-                </label>
-                <label className={`flex items-center gap-2 px-3 py-2 text-sm ${viewMode !== 'segment' ? 'opacity-50 cursor-not-allowed' : ''}`}>
-                  <input
-                    type="checkbox"
-                    checked={showMask}
-                    disabled={viewMode !== 'segment'}
-                    onChange={e => { void handleShowMaskToggle(e.target.checked); }}
-                  />
-                  掩膜
-                </label>
-              </div>
-            )}
-          </div>
           {inpaintRunning && (
             <button className="px-3 py-2 text-sm border rounded" onClick={cancelInpaint}>
               取消生成
@@ -1982,8 +2055,8 @@ export const BridgeTaskLocatePage: React.FC = () => {
                     ? '成果列表'
                     : (viewMode === 'merged_result' ? '合并成果列表' : 'DOM列表'))}
               </div>
-              {editByQuery && (
-                <div className="mt-2 flex gap-2">
+              <div className="mt-2 flex gap-2">
+                {editByQuery && (
                   <button
                     className={`px-2 py-1 text-xs border rounded ${viewMode === 'segment' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-200'}`}
                     disabled={!segmentItems.length}
@@ -1991,28 +2064,30 @@ export const BridgeTaskLocatePage: React.FC = () => {
                   >
                     分段 ({segmentItems.length})
                   </button>
-                  <button
-                    className={`px-2 py-1 text-xs border rounded ${viewMode === 'segment_result' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-200'}`}
-                    disabled={!segmentResultItems.length}
-                    onClick={() => { setViewMode('segment_result'); setDomIndex(0); }}
-                  >
-                    成果 ({segmentResultItems.length})
-                  </button>
-                  <button
-                    className={`px-2 py-1 text-xs border rounded ${viewMode === 'merged_result' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-200'}`}
-                    disabled={!mergedResultItems.length}
-                    onClick={() => { setViewMode('merged_result'); setDomIndex(0); }}
-                  >
-                    合并成果 ({mergedResultItems.length})
-                  </button>
+                )}
+                <button
+                  className={`px-2 py-1 text-xs border rounded ${viewMode === 'segment_result' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-200'}`}
+                  disabled={!segmentResultItems.length}
+                  onClick={() => { setViewMode('segment_result'); setDomIndex(0); }}
+                >
+                  成果 ({segmentResultItems.length})
+                </button>
+                <button
+                  className={`px-2 py-1 text-xs border rounded ${viewMode === 'merged_result' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-200'}`}
+                  disabled={!mergedResultItems.length}
+                  onClick={() => { setViewMode('merged_result'); setDomIndex(0); }}
+                >
+                  合并成果 ({mergedResultItems.length})
+                </button>
+                {editByQuery && (
                   <button
                     className={`px-2 py-1 text-xs border rounded ${viewMode === 'dom' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-200'}`}
                     onClick={() => { setViewMode('dom'); setDomIndex(0); }}
                   >
                     DOM ({doms.length})
                   </button>
-                </div>
-              )}
+                )}
+              </div>
             </div>
             {editByQuery && viewMode === 'segment_result' && (
               <div className="px-3 py-2 border-b">
@@ -2183,69 +2258,87 @@ export const BridgeTaskLocatePage: React.FC = () => {
             />
           )}
 
-          {settingsOpen && (
-            <div className="fixed inset-0 z-[20000] flex items-center justify-center bg-black/30" onClick={() => setSettingsOpen(false)}>
-              <div className="w-full max-w-md rounded-lg bg-white shadow-xl" onClick={e => e.stopPropagation()}>
-                <div className="flex items-center justify-between border-b px-5 py-3">
-                  <h3 className="text-base font-semibold text-gray-800">生成设置</h3>
-                  <button className="text-gray-400 hover:text-gray-600 text-lg leading-none" onClick={() => setSettingsOpen(false)}>✕</button>
-                </div>
-                <div className="px-5 py-4 space-y-5">
-                  <label className="flex items-center justify-between">
-                    <div>
-                      <div className="text-sm font-medium text-gray-700">阴影识别</div>
-                      <div className="text-xs text-gray-500">掩膜生成时检测桥梁周围阴影区域并合并</div>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={enableShadow}
-                      onChange={e => setEnableShadow(e.target.checked)}
-                      className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                    />
-                  </label>
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <div>
-                        <div className="text-sm font-medium text-gray-700">每次生成影像数量</div>
-                        <div className="text-xs text-gray-500">单次 Inpaint 并行生成的结果数量</div>
-                      </div>
-                      <span className="text-sm font-mono text-blue-600 bg-blue-50 px-2 py-0.5 rounded">{inpaintCount}</span>
-                    </div>
-                    <input
-                      type="range"
-                      min={1}
-                      max={8}
-                      step={1}
-                      value={inpaintCount}
-                      onChange={e => setInpaintCount(Number(e.target.value))}
-                      className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
-                    />
-                    <div className="flex justify-between text-xs text-gray-400 mt-0.5">
-                      <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span>
-                    </div>
-                  </div>
-                </div>
-                <div className="border-t px-5 py-3 flex justify-end">
-                  <button
-                    className="px-4 py-2 text-sm rounded bg-blue-600 text-white hover:bg-blue-700"
-                    onClick={() => {
-                      bridgeSettingsService.updateSettings({ enableShadow, inpaintCount }).catch(() => undefined);
-                      setSettingsOpen(false);
-                    }}
-                  >
-                    确定
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
           <div className="col-span-12 md:col-span-9 space-y-3">
             <div className="flex items-center justify-between">
               <div className="text-sm text-gray-600">
                 {selected ? `${domIndex + 1}/${items.length}` : '-'}，已加载 {tiles.filter(t => t.status === 'loaded').length}/{tiles.length}
               </div>
-              <div className="space-x-2">
+              <div className="flex items-center gap-2">
+                {showMask && viewMode === 'segment' && (
+                  <div className="inline-flex items-center gap-2 px-3 py-2 text-sm border rounded bg-white">
+                    <span>透明度</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={Math.round(maskOpacity * 100)}
+                      onChange={e => setMaskOpacity(Number(e.target.value) / 100)}
+                    />
+                    <span>{Math.round(maskOpacity * 100)}%</span>
+                  </div>
+                )}
+                {showMask && (
+                  <button
+                    className={`px-3 py-2 text-sm border rounded disabled:opacity-50 ${editMask ? 'bg-blue-600 text-white border-blue-600' : ''}`}
+                    onClick={() => setEditMask(v => !v)}
+                  >
+                    掩膜编辑
+                  </button>
+                )}
+                <div className="relative" ref={displayMenuRef}>
+                  <button
+                    className="list-none cursor-pointer px-3 py-2 text-sm border rounded bg-white"
+                    type="button"
+                    onClick={() => setDisplayMenuOpen(v => !v)}
+                  >
+                    显示开关
+                  </button>
+                  {displayMenuOpen && (
+                    <div className="absolute right-0 mt-2 w-48 rounded border bg-white shadow z-[10001]">
+                      <label className="flex items-center gap-2 px-3 py-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={showBridgeRange}
+                          onChange={e => setShowBridgeRange(e.target.checked)}
+                        />
+                        桥梁范围
+                      </label>
+                      <label className="flex items-center gap-2 px-3 py-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={showCenterline}
+                          onChange={e => setShowCenterline(e.target.checked)}
+                        />
+                        中心线
+                      </label>
+                      <label className="flex items-center gap-2 px-3 py-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={showLightDirection}
+                          onChange={e => setShowLightDirection(e.target.checked)}
+                        />
+                        光照方向
+                      </label>
+                      <label className="flex items-center gap-2 px-3 py-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={showImpactRange}
+                          onChange={e => setShowImpactRange(e.target.checked)}
+                        />
+                        影响范围
+                      </label>
+                      <label className={`flex items-center gap-2 px-3 py-2 text-sm ${viewMode !== 'segment' ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                        <input
+                          type="checkbox"
+                          checked={showMask}
+                          disabled={viewMode !== 'segment'}
+                          onChange={e => { void handleShowMaskToggle(e.target.checked); }}
+                        />
+                        掩膜
+                      </label>
+                    </div>
+                  )}
+                </div>
                 <button
                   className="px-3 py-2 text-sm border rounded disabled:opacity-50"
                   disabled={domIndex <= 0}
@@ -2322,12 +2415,13 @@ export const BridgeTaskLocatePage: React.FC = () => {
                 style={{ height: '70vh', touchAction: 'none' }}
                 onMouseDown={e => {
                   if (isEditingMask && e.button !== 1) return;
+                  if (localEditActive && e.button === 0) return;
                   if (e.button === 1) {
                     e.preventDefault();
                   }
                   const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
                   const splitX = rect.left + clamp(mergedSwipeRatio, 0, 1) * rect.width;
-                  const dividerMode = viewMode === 'merged_result'
+                  const dividerMode = (viewMode === 'merged_result' || viewMode === 'segment_result')
                     && mergedSwipeEnabled
                     && e.button === 0
                     && Math.abs(e.clientX - splitX) <= 12;
@@ -2341,7 +2435,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
                 }}
                 onMouseMove={e => {
                   if (!dragRef.current.mode) {
-                    if (viewMode === 'merged_result' && mergedSwipeEnabled) {
+                    if ((viewMode === 'merged_result' || viewMode === 'segment_result') && mergedSwipeEnabled) {
                       const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
                       if (rect.width > 0) {
                         const ratio = (e.clientX - rect.left) / rect.width;
@@ -2387,7 +2481,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
                 >
                   ⤢
                 </button>
-                {viewMode === 'merged_result' && (
+                {(viewMode === 'merged_result' || viewMode === 'segment_result') && (
                   <button
                     className={`absolute top-2 left-12 w-9 h-9 flex items-center justify-center rounded border shadow ${mergedSwipeEnabled ? 'bg-blue-600 text-white border-blue-600' : 'bg-white/90 text-gray-700 hover:bg-white'}`}
                     type="button"
@@ -2399,6 +2493,17 @@ export const BridgeTaskLocatePage: React.FC = () => {
                     aria-label={mergedSwipeEnabled ? '关闭卷帘对比' : '开启卷帘对比'}
                   >
                     ◫
+                  </button>
+                )}
+                {viewMode === 'merged_result' && (
+                  <button
+                    className={`absolute top-2 left-[88px] w-9 h-9 flex items-center justify-center rounded border shadow ${localEditActive ? 'bg-blue-600 text-white border-blue-600' : 'bg-white/90 text-gray-700 hover:bg-white'}`}
+                    type="button"
+                    onClick={() => setLocalEditActive(v => !v)}
+                    title={localEditActive ? '关闭局部编辑' : '局部编辑'}
+                    aria-label={localEditActive ? '关闭局部编辑' : '局部编辑'}
+                  >
+                    ✎
                   </button>
                 )}
                 {editMask && viewMode === 'segment' && (
@@ -2489,6 +2594,35 @@ export const BridgeTaskLocatePage: React.FC = () => {
                   <div className="absolute inset-0 flex items-center justify-center text-sm text-white bg-black bg-opacity-50">
                     渲染中...
                   </div>
+                )}
+                {viewMode === 'merged_result' && selected && (
+                  <LocalEditPanel
+                    taskId={taskId}
+                    imagePath={selected.path}
+                    imageWidth={selected.width}
+                    imageHeight={selected.height}
+                    tfw={selected.tfw || null}
+                    view={view}
+                    active={localEditActive}
+                    onToggle={() => setLocalEditActive(v => !v)}
+                    onApplied={async () => {
+                      skipResetRef.current = true;
+                      await reloadSegments().catch(() => undefined);
+                      const ts = Date.now();
+                      setSegments(prev => prev.map(s => {
+                        if (s.kind !== 'merged_result') return s;
+                        const addTs = (url: string) => {
+                          const sep = url.includes('?') ? '&' : '?';
+                          return `${url}${sep}_t=${ts}`;
+                        };
+                        return {
+                          ...s,
+                          fileUrl: addTs(s.fileUrl),
+                          resultFileUrl: s.resultFileUrl ? addTs(s.resultFileUrl) : s.resultFileUrl,
+                        };
+                      }));
+                    }}
+                  />
                 )}
               </div>
               {selected && (

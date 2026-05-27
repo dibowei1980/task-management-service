@@ -4,6 +4,7 @@ import numpy as np
 import traceback
 import json
 import sys
+from bridge_removal.image_utils import safe_imwrite as _safe_imwrite
 try:
     from bridge_removal.bridge_mask_sam2 import BridgeMaskProcessor
 except Exception:
@@ -18,8 +19,9 @@ except Exception:
 class ExtractMasksPipeline:
     def __init__(
         self,
-        dilate_kernel_size=(5, 5),
+        dilate_kernel_size=(3, 3),
         dilate_iterations=1,
+        light_expand_pixels=0,
         overlay_color_bgr=(0, 0, 255),
         overlay_alpha=0.5,
     ):
@@ -29,6 +31,7 @@ class ExtractMasksPipeline:
         self.shadow_detector =  ShadowDetector(ps=0.4, beta=0.25, v_theta=25, delta=0.15, iterations=30)
         self.dilate_kernel_size = dilate_kernel_size
         self.dilate_iterations = dilate_iterations
+        self.light_expand_pixels = light_expand_pixels
         self.overlay_color_bgr = overlay_color_bgr
         self.overlay_alpha = overlay_alpha
 
@@ -96,36 +99,39 @@ class ExtractMasksPipeline:
                 centerlines,
                 split_labels,
                 removed_shadow_mask,
+                light_direction,
             ) = results
 
             shadow_out_path = os.path.join(output_dir, f"{base_name}_shadow_mask.png")
-            cv2.imwrite(shadow_out_path, shadow_mask)
+            _safe_imwrite(shadow_out_path, shadow_mask)
 
             merged_sam, merged_cut = self._merge_masks(mask_sam, mask_cut, shadow_mask)
             merged_sam, merged_cut = self._dilate_merged_masks(merged_sam, merged_cut)
+
+            if self.light_expand_pixels > 0 and light_direction is not None:
+                ld = np.array(light_direction)
+                merged_sam = self._expand_along_light_direction(merged_sam, ld, self.light_expand_pixels)
+                merged_cut = self._expand_along_light_direction(merged_cut, ld, self.light_expand_pixels)
 
             merged_dir = os.path.join(output_dir, "merged")
             os.makedirs(merged_dir, exist_ok=True)
             merged_sam_path = os.path.join(merged_dir, f"{base_name}_mask_sam.png")
             merged_cut_path = os.path.join(merged_dir, f"{base_name}_mask_cut.png")
-            cv2.imwrite(merged_sam_path, merged_sam)
-            cv2.imwrite(merged_cut_path, merged_cut)
+            _safe_imwrite(merged_sam_path, merged_sam)
+            _safe_imwrite(merged_cut_path, merged_cut)
 
             cut_merged_path = os.path.join(output_dir, f"{base_name}_mask_cut_with_shadow.png")
-            cv2.imwrite(cut_merged_path, merged_cut)
-            #print(f"    Saved merged mask (Cut + Shadow) to: {cut_merged_path}")
+            _safe_imwrite(cut_merged_path, merged_cut)
 
 
             final_merged_path = os.path.join(output_dir, f"{base_name}_mask_with_shadow.png") 
             if mod!='bigBridge' :
                 merged_sam = merged_cut
-            cv2.imwrite(final_merged_path, merged_sam) 
-            #print(f"    Saved merged mask (SAM + Shadow) to: {final_merged_path}")
+            _safe_imwrite(final_merged_path, merged_sam) 
 
             overlay_save_path = os.path.join(output_dir, f"{base_name}_overlay.png")
             overlay_img = self._overlay_mask_on_image(image, merged_sam)
-            cv2.imwrite(overlay_save_path, overlay_img)
-            #print(f"    Saved overlay image to: {overlay_save_path}")
+            _safe_imwrite(overlay_save_path, overlay_img)
 
             vis_path = os.path.join(output_dir, f"{base_name}_vis.png")
             self.shadow_detector.visualize_results(
@@ -141,6 +147,14 @@ class ExtractMasksPipeline:
                 removed_shadow_mask=removed_shadow_mask,
                 save_path=vis_path,
             )
+            if light_direction is not None:
+                result["light_direction"] = light_direction.tolist()
+                ld_path = os.path.join(output_dir, f"{base_name}_light_direction.json")
+                try:
+                    with open(ld_path, "w", encoding="utf-8") as f:
+                        json.dump({"light_direction": light_direction.tolist()}, f)
+                except Exception:
+                    pass
             result["status"] = "completed"
         except Exception as e:
             print(f"    Error in shadow detection: {e}")
@@ -168,13 +182,13 @@ class ExtractMasksPipeline:
 
             sam_out_path = os.path.join(output_dir, f"{base_name}_mask_sam.png")
             cut_out_path = os.path.join(output_dir, f"{base_name}_mask_cut.png")
-            cv2.imwrite(sam_out_path, mask_sam)
-            cv2.imwrite(cut_out_path, mask_cut)
+            _safe_imwrite(sam_out_path, mask_sam)
+            _safe_imwrite(cut_out_path, mask_cut)
 
             sam_data_path = os.path.join(base_dir, f"{base_name}_mask_sam.png")
             cut_data_path = os.path.join(base_dir, f"{base_name}_mask_cut.png")
-            cv2.imwrite(sam_data_path, mask_sam)
-            cv2.imwrite(cut_data_path, mask_cut)
+            _safe_imwrite(sam_data_path, mask_sam)
+            _safe_imwrite(cut_data_path, mask_cut)
         except Exception as e:
             print(f"    Error during SAM2 processing: {e}")
             if mask_cut is None and os.path.exists(mask_path):
@@ -214,12 +228,26 @@ class ExtractMasksPipeline:
             tuple: (膨胀后的merged_sam, 膨胀后的merged_cut)
         """
         # 创建矩形结构元素用于膨胀操作
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, self.dilate_kernel_size)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, self.dilate_kernel_size)
         if merged_sam is not None:
             merged_sam = cv2.dilate(merged_sam, kernel, iterations=self.dilate_iterations)
         if merged_cut is not None:
             merged_cut = cv2.dilate(merged_cut, kernel, iterations=self.dilate_iterations)
         return merged_sam, merged_cut
+
+    def _expand_along_light_direction(self, mask, light_direction, pixels):
+        if mask is None or light_direction is None or pixels <= 0:
+            return mask
+        h, w = mask.shape[:2]
+        dx, dy = float(light_direction[0]), float(light_direction[1])
+        result = mask.copy()
+        for step in range(1, pixels + 1):
+            offset_x = dx * step
+            offset_y = dy * step
+            m = np.float32([[1, 0, offset_x], [0, 1, offset_y]])
+            shifted = cv2.warpAffine(mask, m, (w, h), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+            result = cv2.bitwise_or(result, shifted)
+        return result
 
     def _overlay_mask_on_image(self, image, mask):
         overlay_img = image.copy()

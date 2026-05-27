@@ -72,6 +72,7 @@ def create_app():
     from api.system import system_bp, health_bp
     from api.jobs import jobs_bp
     from api.settings import settings_bp
+    from api.runninghub import runninghub_bp
 
     app.register_blueprint(health_bp)
     app.register_blueprint(auth_bp)
@@ -82,6 +83,7 @@ def create_app():
     app.register_blueprint(system_bp)
     app.register_blueprint(jobs_bp)
     app.register_blueprint(settings_bp)
+    app.register_blueprint(runninghub_bp)
 
     with app.app_context():
         from db.models import ProjectModel, JobModel, SessionModel
