@@ -117,6 +117,7 @@ public class H2SchemaBootstrap implements ApplicationRunner {
         execUpsertProject("c0000001-0000-0000-0000-00000000000a", "SURVEY_MONITOR", "调查监测", "自然资源调查监测");
         execUpsertProject("c0000001-0000-0000-0000-00000000000b", "SMART_CITY", "智慧城市", "智慧城市相关服务");
         execUpsertProject("c0000001-0000-0000-0000-00000000000c", "MAP_COMPILATION", "地图编制", "地图编制服务");
+        execUpsertProject("c0000001-0000-0000-0000-00000000000e", "BRIDGE_REMOVAL_BATCH", "桥梁去除（批次）", "桥梁去除项目");
         execUpsertProject("c0000001-0000-0000-0000-00000000000d", "OTHER", "其他", "未分类项目类型");
     }
 
@@ -193,6 +194,8 @@ public class H2SchemaBootstrap implements ApplicationRunner {
         execUpsertTaskType("b0000002-0000-0000-0000-000000000007", "MODEL_MONO", "内业单体建模", dp);
         execUpsertTaskType("b0000002-0000-0000-0000-000000000008", "LEVEL_CALC", "水准计算", dp);
         execUpsertTaskType("b0000002-0000-0000-0000-000000000009", "NETWORK_ADJ", "控制网解算", dp);
+        execUpsertTaskType("b0000002-0000-0000-0000-000000000010", "BRIDGE_REMOVAL_BATCH", "桥梁去除（批次）", dp);
+        execUpsertTaskType("b0000002-0000-0000-0000-000000000011", "BRIDGE_REMOVAL_UNIT", "桥梁去除（单元）", dp);
 
         execUpsertTaskType("b0000003-0000-0000-0000-000000000001", "DLG_MAKE", "DLG制作", pd);
         execUpsertTaskType("b0000003-0000-0000-0000-000000000002", "DEM_MAKE", "DEM制作", pd);

@@ -382,6 +382,12 @@ def delete_project(project_id: str):
         logger.error("Delete project %s failed (rolled back): %s", project_id, ex)
         return api_error("delete_failed", f"Failed to delete project: {str(ex)}", 500)
 
+    try:
+        from services.overlap_service import cleanup_parent_overlaps
+        cleanup_parent_overlaps(project_id)
+    except Exception:
+        pass
+
     return api_no_content()
 
 
@@ -504,6 +510,18 @@ def create_project():
         "parent_task_id": body.get("parent_task_id"),
     }
     set_project(project_id, project)
+
+    parent_task_id = body.get("parent_task_id")
+    if parent_task_id:
+        geo_keys = ("bridge_polygon", "bridge_polygon_geojson", "impact_scope")
+        if any(k in input_params for k in geo_keys):
+            try:
+                from services.overlap_service import rebuild_overlaps_for_parent
+                from services.project_service import get_subtasks_local
+                siblings = get_subtasks_local(parent_task_id)
+                rebuild_overlaps_for_parent(parent_task_id, siblings)
+            except Exception:
+                pass
 
     return api_created(
         project_to_task_response(project),

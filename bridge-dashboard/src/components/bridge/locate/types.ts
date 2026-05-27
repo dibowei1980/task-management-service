@@ -19,6 +19,7 @@ export type LocateItem = {
   successorBridgePolygonsPx?: Array<Array<[number, number]>> | null;
   successorImpactPolygonsPx?: Array<Array<[number, number]>> | null;
   successorImpactLabelItems?: Array<{ name?: string; polygonPx?: Array<[number, number]> | null }> | null;
+  overlappingBridgeItems?: Array<{ name?: string; bridgePolygonPx?: Array<[number, number]> | null; impactPolygonPx?: Array<[number, number]> | null; workflowStatus?: string }> | null;
   segmentId?: number | string;
   imagePath?: string;
   worldFilePath?: string;
@@ -46,6 +47,7 @@ export type DomLocateResponse = {
   domCount: number;
   dependencyCount: number;
   successorCount?: number;
+  overlappingCount?: number;
   doms: LocateItem[];
 };
 

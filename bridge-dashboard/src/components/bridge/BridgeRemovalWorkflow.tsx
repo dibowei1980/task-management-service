@@ -31,6 +31,8 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [showOnlyMineTasks, setShowOnlyMineTasks] = useState(true);
   const [infoTask, setInfoTask] = useState<BridgeTask | null>(null);
+  const [infoOverlapping, setInfoOverlapping] = useState<Array<{ id: string; name: string; workflowStatus: string }>>([]);
+  const [infoOverlappingLoading, setInfoOverlappingLoading] = useState(false);
   const [focusTaskId, setFocusTaskId] = useState<string | null>(null);
   const [batchMaskGenerating, setBatchMaskGenerating] = useState(false);
   const [batchMaskMessage, setBatchMaskMessage] = useState<string | null>(null);
@@ -47,6 +49,23 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
   const userId = user?.userId;
   const userName = user?.username;
   const hasBroadProjectRead = roles.includes('project:read_global') || roles.includes('project:read_department') || roles.includes('project:read_own') || roles.includes('project:read') || roles.includes('project:create');
+
+  useEffect(() => {
+    if (!infoTask) {
+      setInfoOverlapping([]);
+      return;
+    }
+    let disposed = false;
+    setInfoOverlappingLoading(true);
+    bridgeTaskService.getOverlappingTasks(infoTask.id).then(res => {
+      if (!disposed) setInfoOverlapping(res?.overlappingTasks ?? []);
+    }).catch(() => {
+      if (!disposed) setInfoOverlapping([]);
+    }).finally(() => {
+      if (!disposed) setInfoOverlappingLoading(false);
+    });
+    return () => { disposed = true; };
+  }, [infoTask]);
 
   const userNameById = useMemo(() => {
     const map: Record<string, string> = {};
@@ -592,7 +611,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
   };
 
   const renderLocate = (task: BridgeTask) => (
-    <button className="text-blue-600 hover:text-blue-900" type="button" onClick={() => navigate(`/tasks/${task.id}/locate`)}>
+    <button className="text-blue-600 hover:text-blue-900" type="button" onClick={() => navigate(`/tasks/${task.id}/locate?tab=dom`)}>
       定位
     </button>
   );
@@ -611,7 +630,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
   );
 
   const renderView = (task: BridgeTask) => (
-    <button className="text-blue-600 hover:text-blue-900" type="button" onClick={() => navigate(`/tasks/${task.id}/locate`)}>
+    <button className="text-blue-600 hover:text-blue-900" type="button" onClick={() => navigate(`/tasks/${task.id}/locate?tab=dom`)}>
       查看
     </button>
   );
@@ -1032,6 +1051,22 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
               <div><span className="text-gray-500">状态：</span>{infoTask.status}</div>
               <div><span className="text-gray-500">优先级：</span>{infoTask.priority}</div>
               <div><span className="text-gray-500">工作流状态：</span>{getWorkflowStatusForTask(infoTask) || '-'}</div>
+              <div>
+                <span className="text-gray-500">影响的重叠子任务：</span>
+                {infoOverlappingLoading ? (
+                  <span className="text-gray-400">加载中...</span>
+                ) : infoOverlapping.length === 0 ? (
+                  <span className="text-gray-400">无</span>
+                ) : (
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {infoOverlapping.map(t => (
+                      <span key={t.id} className="inline-flex items-center px-2 py-0.5 rounded text-xs bg-blue-50 text-blue-700 border border-blue-200">
+                        {t.name || t.id}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
               {infoTask.inputParams && (
                 <div>
                   <span className="text-gray-500">输入参数：</span>

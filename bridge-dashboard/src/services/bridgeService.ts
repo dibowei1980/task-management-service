@@ -112,6 +112,11 @@ export const bridgeTaskService = {
     return response.data;
   },
 
+  getOverlappingTasks: async (taskId: string) => {
+    const response = await bridgeApi.get(`/api/v1/tasks/${taskId}/overlapping-tasks`);
+    return response.data as { overlappingTasks: Array<{ id: string; name: string; workflowStatus: string }> };
+  },
+
   preprocessGenerate: async (taskId: string) => {
     const response = await bridgeApi.post(`/api/v1/tasks/${taskId}/preprocess-generate`);
     return response.data;

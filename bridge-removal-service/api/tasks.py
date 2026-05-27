@@ -40,6 +40,81 @@ _ALLOWED_ROOTS: list = []
 if _ALLOWED_ROOTS_ENV:
     _ALLOWED_ROOTS = [os.path.realpath(p) for p in _ALLOWED_ROOTS_ENV.split(";") if p.strip()]
 
+_sibling_lock = threading.Lock()
+
+
+LOCKING_WORKFLOW_STATUSES = {"处理中", "需修改"}
+
+
+def _lock_overlapping_siblings(task_id, parent_task_id):
+    from services.overlap_service import get_overlapping_task_ids
+    from services.project_service import get_subtasks_local, update_project_fields
+    overlapping_ids = get_overlapping_task_ids(parent_task_id, task_id)
+    if not overlapping_ids:
+        return
+    siblings = get_subtasks_local(parent_task_id)
+    for s in siblings:
+        if s.get("id") == task_id:
+            continue
+        if s.get("id") not in overlapping_ids:
+            continue
+        s_ip = s.get("inputParams") or {}
+        s_ws = s_ip.get("workflowStatus") or s_ip.get("workflow_status") or ""
+        if s_ws in LOCKING_WORKFLOW_STATUSES:
+            continue
+        if s_ws == "已锁定":
+            continue
+        if s_ws not in {"待处理"}:
+            continue
+        s_ip["workflowStatus"] = "已锁定"
+        s_ip["workflow_status"] = "已锁定"
+        update_project_fields(s.get("id"), {
+            "input_params": s_ip,
+            "status": "PAUSED",
+        })
+
+
+def _unlock_affected_siblings(task_id, project, old_ws, new_ws):
+    if old_ws in LOCKING_WORKFLOW_STATUSES and new_ws not in LOCKING_WORKFLOW_STATUSES:
+        parent_task_id = project.get("parent_task_id")
+        if not parent_task_id:
+            return
+        from services.overlap_service import get_overlapping_task_ids
+        my_overlaps = get_overlapping_task_ids(parent_task_id, task_id)
+        if not my_overlaps:
+            return
+        from services.project_service import get_subtasks_local
+        siblings = get_subtasks_local(parent_task_id)
+        sibling_map = {s.get("id"): s for s in siblings}
+        for locked_tid in my_overlaps:
+            s = sibling_map.get(locked_tid)
+            if not s:
+                continue
+            s_ip = s.get("inputParams") or {}
+            s_ws = s_ip.get("workflowStatus") or s_ip.get("workflow_status") or ""
+            if s_ws != "已锁定":
+                continue
+            s_overlaps = get_overlapping_task_ids(parent_task_id, locked_tid)
+            still_locked = False
+            for o_tid in s_overlaps:
+                if o_tid == task_id:
+                    continue
+                o = sibling_map.get(o_tid)
+                if not o:
+                    continue
+                o_ip = o.get("inputParams") or {}
+                o_ws = o_ip.get("workflowStatus") or o_ip.get("workflow_status") or ""
+                if o_ws in LOCKING_WORKFLOW_STATUSES:
+                    still_locked = True
+                    break
+            if not still_locked:
+                s_ip["workflowStatus"] = "待处理"
+                s_ip["workflow_status"] = "待处理"
+                update_project_fields(s.get("id"), {
+                    "input_params": s_ip,
+                    "status": "PENDING",
+                })
+
 
 def _is_path_allowed(requested_path: str) -> bool:
     if not requested_path:
@@ -242,6 +317,22 @@ def get_task(task_id: str):
     return api_ok(resp)
 
 
+@tasks_bp.route("/<task_id>/overlapping-tasks", methods=["GET"])
+@require_local_auth
+def get_overlapping_tasks(task_id: str):
+    project = get_project(task_id)
+    if not project:
+        project = find_project_by_task_id(task_id)
+    if not project:
+        return api_error("not_found", "Task not found", 404)
+    parent_task_id = project.get("parent_task_id") or (project.get("input_params") or {}).get("project_id")
+    if not parent_task_id:
+        return api_ok({"overlapping_tasks": []})
+    from services.overlap_service import get_overlapping_tasks_with_names
+    overlapping = get_overlapping_tasks_with_names(parent_task_id, task_id)
+    return api_ok({"overlapping_tasks": overlapping})
+
+
 @tasks_bp.route("/<task_id>", methods=["PUT"])
 @require_local_auth
 @validate_body(ProjectUpdateBody)
@@ -275,6 +366,18 @@ def update_task(task_id: str):
             except (json.JSONDecodeError, TypeError):
                 ip = {}
         updates["input_params"] = ip
+        geo_keys = ("bridge_polygon", "bridge_polygon_geojson", "impact_scope")
+        if any(k in ip for k in geo_keys):
+            parent_task_id = (project.get("parent_task_id") or project.get("project_id") or
+                              (ip.get("project_id") if isinstance(ip, dict) else None))
+            if parent_task_id:
+                try:
+                    from services.overlap_service import rebuild_overlaps_for_parent
+                    from services.project_service import get_subtasks_local
+                    siblings = get_subtasks_local(parent_task_id)
+                    rebuild_overlaps_for_parent(parent_task_id, siblings)
+                except Exception:
+                    pass
     updated = update_project_fields(task_id, updates)
     return api_ok(project_to_task_response(updated))
 
@@ -308,45 +411,69 @@ def update_workflow_status(task_id: str):
     if is_local_unsynced and (current_ws, workflow_status) in qa_blocked_transitions:
         return api_error("qa_blocked", "Local unsynced project cannot pass quality check. Submit to TMS first.", 403)
 
-    input_params["workflowStatus"] = workflow_status
-    input_params["workflow_status"] = workflow_status
+    with _sibling_lock:
+        if workflow_status in LOCKING_WORKFLOW_STATUSES:
+            parent_task_id = project.get("parent_task_id")
+            if parent_task_id:
+                from services.overlap_service import get_overlapping_task_ids
+                from services.project_service import get_subtasks_local
+                overlapping_ids = get_overlapping_task_ids(parent_task_id, task_id)
+                if overlapping_ids:
+                    siblings = get_subtasks_local(parent_task_id)
+                    for s in siblings:
+                        if s.get("id") == task_id:
+                            continue
+                        if s.get("id") not in overlapping_ids:
+                            continue
+                        s_ip = s.get("inputParams") or {}
+                        s_ws = s_ip.get("workflowStatus") or s_ip.get("workflow_status") or ""
+                        if s_ws in LOCKING_WORKFLOW_STATUSES:
+                            return api_error("locked", "Task is locked by in-progress sibling tasks", 403)
 
-    comment_stage = body.get("comment_stage")
-    comment_result = body.get("comment_result")
-    comment_message = body.get("comment_message")
-    intermediate_path = body.get("intermediate_path")
-    progress = body.get("progress")
+        input_params["workflowStatus"] = workflow_status
+        input_params["workflow_status"] = workflow_status
 
-    if comment_stage:
-        input_params["comment_stage"] = comment_stage
-    if comment_result:
-        input_params["comment_result"] = comment_result
-    if comment_message:
-        input_params["comment_message"] = comment_message
-    if intermediate_path:
-        input_params["intermediate_path"] = intermediate_path
-    if progress is not None:
-        project["progress"] = progress
+        comment_stage = body.get("comment_stage")
+        comment_result = body.get("comment_result")
+        comment_message = body.get("comment_message")
+        intermediate_path = body.get("intermediate_path")
+        progress = body.get("progress")
 
-    project["input_params"] = input_params
+        if comment_stage:
+            input_params["comment_stage"] = comment_stage
+        if comment_result:
+            input_params["comment_result"] = comment_result
+        if comment_message:
+            input_params["comment_message"] = comment_message
+        if intermediate_path:
+            input_params["intermediate_path"] = intermediate_path
+        if progress is not None:
+            project["progress"] = progress
 
-    from services.status_mapping import PENDING, PAUSED, IN_PROGRESS, FAILED, SUBMITTED_FOR_QA, COMPLETED
-    VALID_PLATFORM_STATUSES = {PENDING, PAUSED, IN_PROGRESS, FAILED, SUBMITTED_FOR_QA, COMPLETED,
-                               "PENDING_QA", "NEEDS_REVISION", "PENDING_WRITEBACK", "ASSIGNED", "RECEIVED"}
-    project["status"] = workflow_status if workflow_status in VALID_PLATFORM_STATUSES else project.get("status", PENDING)
+        project["input_params"] = input_params
 
-    if workflow_status == "COMPLETED":
-        project["progress"] = 100
-        project["output_results"] = json.dumps(input_params, ensure_ascii=False)
+        from services.status_mapping import PENDING, PAUSED, IN_PROGRESS, FAILED, SUBMITTED_FOR_QA, COMPLETED
+        VALID_PLATFORM_STATUSES = {PENDING, PAUSED, IN_PROGRESS, FAILED, SUBMITTED_FOR_QA, COMPLETED,
+                                   "PENDING_QA", "NEEDS_REVISION", "PENDING_WRITEBACK", "ASSIGNED", "RECEIVED"}
+        project["status"] = workflow_status if workflow_status in VALID_PLATFORM_STATUSES else project.get("status", PENDING)
+
+        if workflow_status == "COMPLETED":
+            project["progress"] = 100
+            project["output_results"] = json.dumps(input_params, ensure_ascii=False)
+
+        update_project_fields(task_id, {
+            "status": project["status"],
+            "input_params": input_params,
+            "progress": project.get("progress", 0),
+            "output_results": project.get("output_results"),
+        })
 
     callback_task_status(task_id, workflow_status, results=project.get("output_results") if workflow_status == "COMPLETED" else None)
-
-    update_project_fields(task_id, {
-        "status": project["status"],
-        "input_params": input_params,
-        "progress": project.get("progress", 0),
-        "output_results": project.get("output_results"),
-    })
+    _unlock_affected_siblings(task_id, project, current_ws, workflow_status)
+    if workflow_status in LOCKING_WORKFLOW_STATUSES:
+        parent_task_id = project.get("parent_task_id")
+        if parent_task_id:
+            _lock_overlapping_siblings(task_id, parent_task_id)
 
     return api_ok(project_to_task_response(project))
 
@@ -370,24 +497,44 @@ def dom_locate(task_id: str):
     dependency_count = 0
     successor_count = 0
     predecessor_polygons = []
+    predecessor_impact_polygons = []
+    predecessor_label_items = []
     successor_polygons = []
+    successor_impact_polygons = []
+    successor_label_items = []
+    overlapping_bridge_items = []
     if parent_task_id:
+        from services.overlap_service import get_overlapping_task_ids
         from services.project_service import get_subtasks_local
-        siblings = get_subtasks_local(parent_task_id)
-        for s in siblings:
-            s_ip = s.get("inputParams") or {}
-            s_poly = s_ip.get("bridge_polygon") or s_ip.get("bridge_polygon_geojson")
-            s_impact = s_ip.get("impact_scope")
-            s_id = s.get("id")
-            if s_id == task_id:
-                continue
-            if s_poly and _bbox_overlaps_poly(impact_scope, s_poly):
-                if s.get("status") not in ("COMPLETED",):
+        overlapping_ids = get_overlapping_task_ids(parent_task_id, task_id)
+        if overlapping_ids:
+            siblings = get_subtasks_local(parent_task_id)
+            for s in siblings:
+                s_id = s.get("id")
+                if s_id == task_id or s_id not in overlapping_ids:
+                    continue
+                s_ip = s.get("inputParams") or {}
+                s_poly = s_ip.get("bridge_polygon") or s_ip.get("bridge_polygon_geojson")
+                s_impact = s_ip.get("impact_scope")
+                s_ws = s_ip.get("workflowStatus") or s_ip.get("workflow_status") or ""
+                s_name = s.get("name") or ""
+                overlapping_bridge_items.append({
+                    "name": s_name,
+                    "bridge_polygon": s_poly,
+                    "impact_scope": s_impact,
+                    "workflow_status": s_ws,
+                })
+                if s_ws not in LOCKING_WORKFLOW_STATUSES:
+                    continue
+                if s_poly and _bbox_overlaps_poly(impact_scope, s_poly):
                     predecessor_polygons.append(s_poly)
+                    predecessor_impact_polygons.append(s_impact)
+                    predecessor_label_items.append({"name": s_name, "polygon": s_impact})
                     dependency_count += 1
-            if s_poly and _bbox_overlaps_poly(s_impact, bridge_polygon):
-                if s.get("status") not in ("COMPLETED",):
+                if s_poly and _bbox_overlaps_poly(s_impact, bridge_polygon):
                     successor_polygons.append(s_poly)
+                    successor_impact_polygons.append(s_impact)
+                    successor_label_items.append({"name": s_name, "polygon": s_impact})
                     successor_count += 1
 
     doms = []
@@ -402,7 +549,22 @@ def dom_locate(task_id: str):
             impact_polygon_px = _world_poly_to_pixel(impact_scope, bounds, width_px, height_px) if impact_scope and bounds else None
             predecessor_polygons_px = [_world_poly_to_pixel(p, bounds, width_px, height_px) for p in predecessor_polygons] if bounds else []
             successor_polygons_px = [_world_poly_to_pixel(p, bounds, width_px, height_px) for p in successor_polygons] if bounds else []
+            predecessor_impact_polygons_px = [_world_poly_to_pixel(p, bounds, width_px, height_px) for p in predecessor_impact_polygons] if bounds else []
+            successor_impact_polygons_px = [_world_poly_to_pixel(p, bounds, width_px, height_px) for p in successor_impact_polygons] if bounds else []
+            predecessor_impact_label_items = [{"name": item["name"], "polygonPx": _world_poly_to_pixel(item["polygon"], bounds, width_px, height_px)} for item in predecessor_label_items] if bounds else []
+            successor_impact_label_items = [{"name": item["name"], "polygonPx": _world_poly_to_pixel(item["polygon"], bounds, width_px, height_px)} for item in successor_label_items] if bounds else []
             centerline_px = _world_poly_to_pixel(bridge_centerline, bounds, width_px, height_px) if bridge_centerline and bounds else None
+            overlapping_bridge_items_px = []
+            if bounds:
+                for ob in overlapping_bridge_items:
+                    ob_bp = _world_poly_to_pixel(ob["bridge_polygon"], bounds, width_px, height_px) if ob.get("bridge_polygon") else None
+                    ob_ip = _world_poly_to_pixel(ob["impact_scope"], bounds, width_px, height_px) if ob.get("impact_scope") else None
+                    overlapping_bridge_items_px.append({
+                        "name": ob["name"],
+                        "bridgePolygonPx": ob_bp,
+                        "impactPolygonPx": ob_ip,
+                        "workflowStatus": ob["workflow_status"],
+                    })
             doms.append({
                 "path": dom_path,
                 "file_url": f"/api/v1/tasks/{task_id}/dom-file?path={dom_path}",
@@ -414,6 +576,11 @@ def dom_locate(task_id: str):
                 "impact_polygon_px": impact_polygon_px,
                 "predecessor_bridge_polygons_px": predecessor_polygons_px,
                 "successor_bridge_polygons_px": successor_polygons_px,
+                "predecessor_impact_polygons_px": predecessor_impact_polygons_px,
+                "successor_impact_polygons_px": successor_impact_polygons_px,
+                "predecessor_impact_label_items": predecessor_impact_label_items,
+                "successor_impact_label_items": successor_impact_label_items,
+                "overlapping_bridge_items": overlapping_bridge_items_px,
                 "bridge_geometry_missing": bridge_geometry_missing,
                 "bridge_geometry_missing_reason": bridge_geometry_missing_reason,
             })
@@ -429,6 +596,11 @@ def dom_locate(task_id: str):
                 "impact_polygon_px": None,
                 "predecessor_bridge_polygons_px": [],
                 "successor_bridge_polygons_px": [],
+                "predecessor_impact_polygons_px": [],
+                "successor_impact_polygons_px": [],
+                "predecessor_impact_label_items": [],
+                "successor_impact_label_items": [],
+                "overlapping_bridge_items": [],
                 "bridge_geometry_missing": bridge_geometry_missing,
                 "bridge_geometry_missing_reason": bridge_geometry_missing_reason,
             })
@@ -438,6 +610,7 @@ def dom_locate(task_id: str):
         "dom_count": len(doms),
         "dependency_count": dependency_count,
         "successor_count": successor_count,
+        "overlapping_count": len(overlapping_bridge_items),
         "doms": doms,
     })
 
@@ -840,8 +1013,40 @@ def execute_task(task_id: str):
     if task_type not in ("BRIDGE_REMOVAL_BATCH", "BRIDGE_REMOVAL_UNIT"):
         return api_error("invalid_task_type", f"Unsupported task type: {task_type}", 400)
 
+    if isinstance(input_params, str):
+        try:
+            input_params = json.loads(input_params)
+        except (json.JSONDecodeError, TypeError):
+            input_params = {}
+    workflow_status = input_params.get("workflowStatus") or input_params.get("workflow_status")
+    if workflow_status == "已锁定":
+        return api_error("locked", "Task is locked by in-progress sibling tasks", 403)
+
+    if task_type == "BRIDGE_REMOVAL_UNIT":
+        parent_task_id = existing.get("parent_task_id")
+        if parent_task_id:
+            from services.overlap_service import get_overlapping_task_ids
+            from services.project_service import get_subtasks_local
+            overlapping_ids = get_overlapping_task_ids(parent_task_id, task_id)
+            if overlapping_ids:
+                siblings = get_subtasks_local(parent_task_id)
+                for s in siblings:
+                    if s.get("id") == task_id:
+                        continue
+                    if s.get("id") not in overlapping_ids:
+                        continue
+                    s_ip = s.get("inputParams") or {}
+                    s_ws = s_ip.get("workflowStatus") or s_ip.get("workflow_status") or ""
+                    if s_ws in LOCKING_WORKFLOW_STATUSES:
+                        return api_error("locked", "Task is locked by in-progress sibling tasks", 403)
+
     job_id = create_job_record(task_id, task_type, input_params)
     update_project_fields(task_id, {"job_id": job_id, "status": "IN_PROGRESS"})
+
+    if task_type == "BRIDGE_REMOVAL_UNIT":
+        parent_task_id = existing.get("parent_task_id")
+        if parent_task_id:
+            _lock_overlapping_siblings(task_id, parent_task_id)
 
     app = current_app._get_current_object()
 

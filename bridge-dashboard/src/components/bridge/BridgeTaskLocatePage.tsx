@@ -23,6 +23,10 @@ export const BridgeTaskLocatePage: React.FC = () => {
     const sp = new URLSearchParams(location.search || '');
     return sp.get('mode') === 'edit';
   }, [location.search]);
+  const tabByQuery = useMemo(() => {
+    const sp = new URLSearchParams(location.search || '');
+    return sp.get('tab') || '';
+  }, [location.search]);
   const initialDisplayPrefs = useMemo(() => loadDisplayTogglePrefs(), []);
   const initialMaskUiPrefs = useMemo(() => loadMaskUiPrefs(), []);
 
@@ -80,7 +84,9 @@ export const BridgeTaskLocatePage: React.FC = () => {
   const [domIndex, setDomIndex] = useState(0);
   const [loadSeq, setLoadSeq] = useState(0);
   const [editMask, setEditMask] = useState(false);
-  const [viewMode, setViewMode] = useState<'dom' | 'segment' | 'segment_result' | 'merged_result'>(editByQuery ? 'segment' : 'segment_result');
+  const [viewMode, setViewMode] = useState<'dom' | 'segment' | 'segment_result' | 'merged_result'>(
+    tabByQuery === 'dom' ? 'dom' : (editByQuery ? 'segment' : 'segment_result')
+  );
   const [showBridgeRange, setShowBridgeRange] = useState(initialDisplayPrefs?.showBridgeRange ?? true);
   const [showCenterline, setShowCenterline] = useState(initialDisplayPrefs?.showCenterline ?? true);
   const [showLightDirection, setShowLightDirection] = useState(initialDisplayPrefs?.showLightDirection ?? true);
@@ -1923,6 +1929,11 @@ export const BridgeTaskLocatePage: React.FC = () => {
               drawPolyWorld(t.item.bridgePolygonPx, '#2563eb', 3);
             }
           } else {
+            if (Array.isArray(t.item.overlappingBridgeItems)) {
+              for (const ob of t.item.overlappingBridgeItems) {
+                if (Array.isArray(ob?.bridgePolygonPx)) drawPolyWorld(ob.bridgePolygonPx, '#f97316', 2);
+              }
+            }
             if (Array.isArray(t.item.predecessorBridgePolygonsPx)) {
               for (const p of t.item.predecessorBridgePolygonsPx) {
                 if (Array.isArray(p)) drawPolyWorld(p, '#ec4899', 2);
@@ -1959,6 +1970,15 @@ export const BridgeTaskLocatePage: React.FC = () => {
         }
         
         if (showImpactRange) {
+          if (Array.isArray(t.item.overlappingBridgeItems)) {
+            for (const ob of t.item.overlappingBridgeItems) {
+              if (Array.isArray(ob?.impactPolygonPx)) drawPolyWorld(ob.impactPolygonPx, '#f97316', 2, [6, 4]);
+              const obName = typeof ob?.name === 'string' ? ob.name.trim() : '';
+              if (obName && Array.isArray(ob?.impactPolygonPx)) {
+                drawLabelForPolygon(ob.impactPolygonPx, obName, '#f97316');
+              }
+            }
+          }
           if (Array.isArray(t.item.predecessorImpactPolygonsPx)) {
             for (const p of t.item.predecessorImpactPolygonsPx) {
               if (Array.isArray(p)) drawPolyWorld(p, '#ec4899', 2, [6, 4]);
@@ -2032,7 +2052,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
             {headerTitle}
           </button>
           <div className="text-xs text-gray-500">
-            DOM {data?.domCount ?? 0}，分段 {segments.length}，前置 {data?.dependencyCount ?? 0}，后置 {data?.successorCount ?? 0}
+            DOM {data?.domCount ?? 0}，分段 {segments.length}，重叠 {data?.overlappingCount ?? 0}，前置 {data?.dependencyCount ?? 0}，后置 {data?.successorCount ?? 0}
           </div>
         </div>
         <div className="flex items-center gap-2 relative z-[10000]">
@@ -2056,7 +2076,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
                     : (viewMode === 'merged_result' ? '合并成果列表' : 'DOM列表'))}
               </div>
               <div className="mt-2 flex gap-2">
-                {editByQuery && (
+                {tabByQuery !== 'dom' && editByQuery && (
                   <button
                     className={`px-2 py-1 text-xs border rounded ${viewMode === 'segment' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-200'}`}
                     disabled={!segmentItems.length}
@@ -2065,21 +2085,25 @@ export const BridgeTaskLocatePage: React.FC = () => {
                     分段 ({segmentItems.length})
                   </button>
                 )}
-                <button
-                  className={`px-2 py-1 text-xs border rounded ${viewMode === 'segment_result' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-200'}`}
-                  disabled={!segmentResultItems.length}
-                  onClick={() => { setViewMode('segment_result'); setDomIndex(0); }}
-                >
-                  成果 ({segmentResultItems.length})
-                </button>
-                <button
-                  className={`px-2 py-1 text-xs border rounded ${viewMode === 'merged_result' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-200'}`}
-                  disabled={!mergedResultItems.length}
-                  onClick={() => { setViewMode('merged_result'); setDomIndex(0); }}
-                >
-                  合并成果 ({mergedResultItems.length})
-                </button>
-                {editByQuery && (
+                {tabByQuery !== 'dom' && (
+                  <button
+                    className={`px-2 py-1 text-xs border rounded ${viewMode === 'segment_result' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-200'}`}
+                    disabled={!segmentResultItems.length}
+                    onClick={() => { setViewMode('segment_result'); setDomIndex(0); }}
+                  >
+                    成果 ({segmentResultItems.length})
+                  </button>
+                )}
+                {tabByQuery !== 'dom' && (
+                  <button
+                    className={`px-2 py-1 text-xs border rounded ${viewMode === 'merged_result' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-200'}`}
+                    disabled={!mergedResultItems.length}
+                    onClick={() => { setViewMode('merged_result'); setDomIndex(0); }}
+                  >
+                    合并成果 ({mergedResultItems.length})
+                  </button>
+                )}
+                {(tabByQuery === 'dom' || editByQuery) && (
                   <button
                     className={`px-2 py-1 text-xs border rounded ${viewMode === 'dom' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-200'}`}
                     onClick={() => { setViewMode('dom'); setDomIndex(0); }}

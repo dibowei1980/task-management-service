@@ -857,17 +857,17 @@ class BridgeRemovalOrchestratorTask(BaseTask):
 
         def _is_predecessor_satisfied(task_obj):
             if not task_obj:
-                return False
+                return True
             status = task_obj.get("status")
             if status == "COMPLETED":
                 return True
             if task_obj.get("type") != "BRIDGE_REMOVAL_UNIT":
-                return False
+                return True
             params = parse_input_params(task_obj.get("inputParams"))
             ws = params.get("workflow_status")
-            if not ws:
+            if ws in ("处理中", "需修改"):
                 return False
-            return ws in ("待初检", "初检通过", "待终检", "已归档")
+            return True
 
         created_statuses = {}
         for tid in created_task_ids:
@@ -1094,12 +1094,18 @@ class BridgeRemovalOrchestratorTask(BaseTask):
             self._log("本地模式：跳过远程依赖创建，依赖关系仅在本地记录")
         self._log(f"依赖图入度: {in_degree}")
 
+        try:
+            from services.overlap_service import rebuild_overlaps_for_parent
+            from services.project_service import get_subtasks_local
+            siblings = get_subtasks_local(self.task_id)
+            rebuild_overlaps_for_parent(self.task_id, siblings)
+            self._log(f"已重建重叠关系记录: parent={self.task_id}, 兄弟数={len(siblings)}")
+        except Exception as ex:
+            self._log(f"重建重叠关系失败: {ex}")
+
         initial_statuses = {}
         for task_id, degree in in_degree.items():
-            if degree == 0:
-                workflow_status = "待处理"
-            else:
-                workflow_status = "已锁定"
+            workflow_status = "待处理"
             task_status = to_platform_status(workflow_status)
             initial_statuses[task_id] = {
                 "task_status": task_status,
@@ -1256,10 +1262,14 @@ class BridgeRemovalUnitProcessorTask(BaseTask):
         inpainted_patch_path = os.path.join(intermediate_path, "inpainted_patch.tif")
         writeback_output_paths = []
 
-        if workflow_status in ("待处理", "已锁定"):
+        if workflow_status == "待处理":
             workflow_status = "处理中"
             _api_set_workflow_status(api_url, headers, self.task_id, workflow_status)
             _api_update_task_status(api_url, headers, self.task_id, "IN_PROGRESS")
+        elif workflow_status == "已锁定":
+            self._log(f"任务 {self.task_id} 处于锁定状态，跳过执行")
+            self.results["manifest"] = {"task_id": self.task_id, "status": "locked", "message": "任务被锁定，等待前置任务完成"}
+            return
 
         merge_step_result(manifest, run_automation_processing(self.task_id, input_params))
         merge_step_result(manifest, run_interactive_correction(self.task_id, input_params))

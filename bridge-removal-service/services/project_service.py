@@ -146,7 +146,18 @@ def update_project_fields(project_id: str, updates: Dict[str, Any]):
 
 
 def delete_project(project_id: str) -> bool:
-    return ProjectRepository.delete(project_id)
+    model = ProjectRepository.find_by_id(project_id)
+    if not model:
+        return False
+    parent_task_id = getattr(model, "parent_task_id", None)
+    result = ProjectRepository.delete(project_id)
+    if result and parent_task_id:
+        try:
+            from services.overlap_service import remove_task_overlaps
+            remove_task_overlaps(parent_task_id, project_id)
+        except Exception:
+            pass
+    return result
 
 
 def project_to_task_response(project: Dict[str, Any]) -> Dict[str, Any]:

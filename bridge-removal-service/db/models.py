@@ -73,6 +73,19 @@ class SessionModel(db.Model):
     expires_at = db.Column(db.DateTime)
 
 
+class TaskOverlapModel(db.Model):
+    __tablename__ = "task_overlaps"
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    parent_task_id = db.Column(db.String(64), nullable=False, index=True)
+    left_task_id = db.Column(db.String(64), nullable=False, index=True)
+    right_task_id = db.Column(db.String(64), nullable=False, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint("parent_task_id", "left_task_id", "right_task_id", name="uq_task_overlap_pair"),
+    )
+
+
 class LocalUserModel(db.Model):
     __tablename__ = "local_users"
     username = db.Column(db.String(128), primary_key=True)

@@ -86,7 +86,7 @@ def create_app():
     app.register_blueprint(runninghub_bp)
 
     with app.app_context():
-        from db.models import ProjectModel, JobModel, SessionModel
+        from db.models import ProjectModel, JobModel, SessionModel, TaskOverlapModel
         db.create_all()
         _ensure_columns(db)
 
