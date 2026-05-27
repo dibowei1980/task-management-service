@@ -129,7 +129,7 @@ def _run_sam2_pipeline(segment_json_path: str, masks_dir: str, task_id: str, ena
             output_dir = item.get("output_dir", masks_dir)
             if base_name:
                 seg_entry["mask_sam_path"] = os.path.join(output_dir, f"{base_name}_mask_sam.png")
-                seg_entry["mask_cut_path"] = os.path.join(output_dir, f"{base_name}_mask_cut.png")
+                seg_entry["mask_cut_path"] = os.path.join(output_dir, f"{base_name}_mask_cut_with_shadow.png")
                 seg_entry["shadow_mask_path"] = os.path.join(output_dir, f"{base_name}_shadow_mask.png")
                 seg_entry["merged_mask_path"] = os.path.join(output_dir, f"{base_name}_mask_with_shadow.png")
                 seg_entry["overlay_path"] = os.path.join(output_dir, f"{base_name}_overlay.png")

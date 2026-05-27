@@ -271,6 +271,7 @@ def generate_bridge_masks(segments_dir: str, output_dir: str, enable_shadow: boo
         _safe_imwrite(mask_cut_path, mask_cut)
         _safe_imwrite(shadow_path, shadow_mask)
         cut_merged = cv2.bitwise_or(mask_cut, shadow_mask)
+        cut_merged = cv2.dilate(cut_merged, kernel, iterations=dilate_iterations)
         _safe_imwrite(cut_merged_path, cut_merged)
         _safe_imwrite(merged_path, merged)
         _safe_imwrite(overlay_path, overlay)
@@ -282,7 +283,7 @@ def generate_bridge_masks(segments_dir: str, output_dir: str, enable_shadow: boo
             "json_path": json_path,
             "image_path": image_path,
             "mask_sam_path": mask_sam_path,
-            "mask_cut_path": mask_cut_path,
+            "mask_cut_path": cut_merged_path,
             "shadow_mask_path": shadow_path,
             "merged_mask_path": merged_path,
             "overlay_path": overlay_path,
@@ -363,6 +364,7 @@ def generate_bridge_masks_from_json(json_path: str, output_dir: str, enable_shad
     _safe_imwrite(mask_cut_path, mask_cut)
     _safe_imwrite(shadow_path, shadow_mask)
     cut_merged = cv2.bitwise_or(mask_cut, shadow_mask)
+    cut_merged = cv2.dilate(cut_merged, kernel, iterations=dilate_iterations)
     _safe_imwrite(cut_merged_path, cut_merged)
     _safe_imwrite(merged_path, merged)
     _safe_imwrite(overlay_path, overlay)
@@ -374,7 +376,7 @@ def generate_bridge_masks_from_json(json_path: str, output_dir: str, enable_shad
         "json_path": json_path,
         "image_path": image_path,
         "mask_sam_path": mask_sam_path,
-        "mask_cut_path": mask_cut_path,
+        "mask_cut_path": cut_merged_path,
         "shadow_mask_path": shadow_path,
         "merged_mask_path": merged_path,
         "overlay_path": overlay_path,
