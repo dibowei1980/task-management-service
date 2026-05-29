@@ -6,6 +6,7 @@ import com.example.taskmanagement.model.TaskTypeDefinition;
 import com.example.taskmanagement.model.TaskTypeGroup;
 import com.example.taskmanagement.repository.TaskTypeDefinitionRepository;
 import com.example.taskmanagement.repository.TaskTypeGroupRepository;
+import com.example.taskmanagement.repository.TaskTypeRegistrationRepository;
 import com.example.taskmanagement.service.TaskTypeService;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
@@ -20,10 +21,12 @@ public class TaskTypeServiceImpl implements TaskTypeService {
 
     private final TaskTypeDefinitionRepository repository;
     private final TaskTypeGroupRepository groupRepository;
+    private final TaskTypeRegistrationRepository registrationRepository;
 
-    public TaskTypeServiceImpl(TaskTypeDefinitionRepository repository, TaskTypeGroupRepository groupRepository) {
+    public TaskTypeServiceImpl(TaskTypeDefinitionRepository repository, TaskTypeGroupRepository groupRepository, TaskTypeRegistrationRepository registrationRepository) {
         this.repository = repository;
         this.groupRepository = groupRepository;
+        this.registrationRepository = registrationRepository;
     }
 
     @Override
@@ -111,6 +114,7 @@ public class TaskTypeServiceImpl implements TaskTypeService {
         if (entity.getReferenceCount() != null && entity.getReferenceCount() > 0) {
             throw new IllegalArgumentException("任务类型已被引用，不能删除");
         }
+        registrationRepository.findByCode(entity.getCode()).ifPresent(registrationRepository::delete);
         repository.delete(entity);
     }
 
@@ -118,10 +122,12 @@ public class TaskTypeServiceImpl implements TaskTypeService {
     @Transactional
     @CacheEvict(value = "taskTypes", allEntries = true)
     public void deleteByCode(String code) {
-        repository.findByCodeIgnoreCase(code.trim().toUpperCase()).ifPresent(entity -> {
+        String normalizedCode = code.trim().toUpperCase();
+        repository.findByCodeIgnoreCase(normalizedCode).ifPresent(entity -> {
             if (entity.getReferenceCount() != null && entity.getReferenceCount() > 0) {
                 throw new IllegalArgumentException("任务类型已被引用，不能删除: " + code);
             }
+            registrationRepository.findByCode(normalizedCode).ifPresent(registrationRepository::delete);
             repository.delete(entity);
         });
     }
