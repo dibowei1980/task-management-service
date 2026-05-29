@@ -13,4 +13,5 @@ public interface TaskTypeGroupService {
     TaskTypeGroupResponse create(TaskTypeGroupRequest request);
     TaskTypeGroupResponse update(UUID id, TaskTypeGroupRequest request);
     void setEnabled(UUID id, boolean enabled);
+    void delete(UUID id);
 }

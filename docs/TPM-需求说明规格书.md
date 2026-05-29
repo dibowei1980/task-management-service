@@ -1,8 +1,15 @@
 # 生产协同系统 — 需求说明规格书
 
-> 版本：v1.19 | 项目框架结构.md 、 生产任务管理模型.md 以本文档为基准
+> 版本：v1.20 | 项目框架结构.md 、 生产任务管理模型.md 以本文档为基准
 
 > 目的：将用户需求整合为规范、可核实的需求清单，供业务方逐项确认
+
+v1.20 变更摘要（2026-05-28）：
+
+> - **任务类型注册审批机制**：外部系统向 TMS 提交任务类型注册申请（含类型代码、名称、分类、接口清单、结果查看端口、回传字段声明等完整信息），TMS 管理员审批通过（选择分组后完成）或拒绝（需填写原因）；审批操作记录完整日志（§2.2.6）
+> - **resultViewUrl 语义明确**：外部系统注册时声明 `resultViewUrl`，指向 TMS 用户可查看任务执行结果的页面 URL 模板（如 `http://localhost:5174/tasks/{id}/locate?tab=result`），与 `callbackPath`（TMS 向外部系统下发任务的执行入口）语义不同；`{id}` 占位符在运行时替换为实际任务 ID（§2.2.2）
+> - **回传字段配置功能**：外部系统在注册申请中声明可提供的回传字段列表（`callbackFields`）和统一查询 API 路径（`resultQueryPath`）；TMS 管理员可随时调整需要拉取的字段子集；外部系统提供一个统一的 API 端点，根据 TMS 请求中指定的字段类型返回对应数据，未请求字段不返回（§2.2.7）
+> - **BRS 相关类型禁止自动注册**：项目类型 BRIDGE_REMOVAL_BATCH、任务类型 BRIDGE_REMOVAL_BATCH 不得在系统启动时自动注册到数据库，必须通过 BRS 向 TMS 提交注册申请（§2.2.6）。BRS 仅向 TMS 注册桥梁去除（批处理），单元处理（BRIDGE_REMOVAL_UNIT）为 BRS 内部概念，不向 TMS 暴露；子任务的待初检映射为 TMS 的进行中状态，通过/不通过也作为 BRS 内部业务流
 
 v1.19 变更摘要（2026-05-13）：
 
@@ -800,9 +807,12 @@ Task 实体新增 `controller_id` 字段（UUID，可空）。非叶子节点（
 | displayName        | ❌  | 人类可读名称                                                     | ✅ 已实现                        |
 | serviceUrl         | ✅  | 外部系统基础 URL                                                 | ✅ 已实现                        |
 | supportedTaskTypes | ✅  | 支持的任务类型编码列表，编码必须存在于 task\_type\_definitions 且已启用；不接收项目类型编码 | ✅ 已实现                        |
-| callbackPath       | ✅  | 任务分发路径模板                                                   | ✅ 已实现                        |
+| callbackPath       | ✅  | 任务分发路径模板（TMS 向外部系统下发任务的执行入口），如 `/api/v1/projects/{id}/execute`；`{id}` 占位符在运行时替换为实际任务 ID | ✅ 已实现                        |
 | ssoClientId        | ✅  | UPM 注册的 SSO 客户端 ID                                         | ✅ 已实现（替代 authType/authToken） |
 | dashboardUrl       | ❌  | 第三方应用面板 URL（TMS 用户可跳转查看业务详情，SSO 互通免登录）                     | ✅ 已实现                        |
+| resultViewUrl      | ❌  | 任务结果查看页面 URL 模板（如 `http://localhost:5174/tasks/{id}/locate?tab=result`）；与 callbackPath 语义不同：callbackPath 是 TMS→外部系统的任务下发入口，resultViewUrl 是 TMS 用户查看外部系统任务执行结果的页面；`{id}` 占位符在运行时替换为实际任务 ID 后写入 task.externalUrl | ✅ 已实现                        |
+| callbackFields     | ❌  | 外部系统可提供的回传字段列表（JSON 数组，存储为字符串）；字段枚举见 §2.2.7；审批通过后同步到 ExternalSystemRegistration | ✅ 已实现                        |
+| resultQueryPath    | ❌  | 外部系统统一结果查询 API 路径模板（如 `/api/v1/projects/{id}/result`）；TMS 按需调用此端点拉取指定字段的结果数据；`{id}` 占位符在运行时替换为实际任务 ID；审批通过后同步到 ExternalSystemRegistration | ✅ 已实现                        |
 
 #### 2.2.3 注册安全约束
 
@@ -820,6 +830,7 @@ Task 实体新增 `controller_id` 字段（UUID，可空）。非叶子节点（
 | 项目分发   | TMS 创建项目后，自动 HTTP POST 到外部系统 callbackPath          | ✅ 已实现                                             |
 | 状态同步回调 | 外部系统回调 PATCH /tasks/{id}/workflow-status，只发送平台标准状态 | ✅ 已实现                                             |
 | 执行结果回写 | 外部系统回调时携带 results 字段，写入 outputResults              | ✅ 已实现（WorkflowStatusUpdateRequest.results + 幂等写入） |
+| 子任务总数上报 | 外部系统回调时携带 totalSubTaskCount 字段，TMS 将其设置为任务 workload，用于进度计算 | ✅ 已实现 |
 | 业务详情跳转 | TMS 用户通过 dashboardUrl 跳转查看第三方应用面板，SSO 互通免登录        | ✅ 已实现（注册时传入 dashboardUrl）                         |
 
 > 状态映射原则  ：业务状态→平台状态的映射由第三方应用内部维护，TMS 不感知任何业务状态语义。
@@ -830,6 +841,82 @@ Task 实体新增 `controller_id` 字段（UUID，可空）。非叶子节点（
 - TMS 在分发后若未收到 `RECEIVED`，按固定策略重试：`最多 3 次`，间隔 `30s / 60s / 120s`（指数退避）。
 - 超过最大重试仍未收到 `RECEIVED`：任务标记为"分发异常待人工处理"，并触发告警。
 - 所有回调（含 `RECEIVED` 与后续状态）必须记录 `requestId` 与回调时间，便于审计追踪。
+
+#### 2.2.6 任务类型注册审批机制
+
+外部系统向 TMS 提交任务类型注册申请，经 TMS 管理员审批后方可正式启用。BRS 相关类型（项目类型 BRIDGE_REMOVAL_BATCH、任务类型 BRIDGE_REMOVAL_BATCH）必须通过此流程注册，禁止系统启动时自动注册到数据库。BRS 仅向 TMS 注册桥梁去除（批处理），单元处理（BRIDGE_REMOVAL_UNIT）为 BRS 内部概念，不向 TMS 暴露单个子任务；子任务的待初检映射为 TMS 的进行中（IN_PROGRESS）状态，通过/不通过也作为 BRS 内部业务流。BRS 通过 statusWorkloads 机制上报批处理进度，并通过 totalSubTaskCount 字段上报总子任务数量，供 TMS 计算进度。
+
+**a. 注册申请提交**
+
+外部系统向 TMS 提交完整的任务类型注册申请信息，包括：
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| typeCode | ✅ | 任务类型代码（唯一标识符） |
+| typeName | ✅ | 任务类型名称（中文/英文） |
+| groupId | ❌ | 任务类型分组 ID（审批时由管理员选择） |
+| callbackPath | ✅ | 已实现的 TMS 对接接口路径（任务分发入口） |
+| resultViewUrl | ❌ | 任务结果查看页面 URL 模板 |
+| interfaceManifest | ❌ | 已实现的 TMS 对接接口清单（含接口名称、版本号、调用方式及参数说明） |
+| callbackFields | ❌ | 外部系统可提供的回传字段列表（见 §2.2.7） |
+| resultQueryPath | ❌ | 外部系统统一结果查询 API 路径（见 §2.2.7） |
+
+**b. 注册审批流程**
+
+| 阶段 | 操作 | 说明 |
+|------|------|------|
+| 查重 | TMS 自动检查 | 收到申请后先查重，类型代码已存在则直接返回拒绝原因 |
+| 待审批 | 进入审批列表 | 未重复的申请进入待审批列表，显示为待审批任务 |
+| 审批通过 | 管理员操作 | 选择将申请的任务类型添加至指定的任务类型分组后完成审批；审批通过后自动创建 TaskTypeDefinition 并将 callbackFields/resultQueryPath 同步到 ExternalSystemRegistration |
+| 审批拒绝 | 管理员操作 | 需填写详细的拒绝原因后执行拒绝操作 |
+
+**c. 审批权限与日志**
+
+| 需求项 | 说明 | 实现状态 |
+|--------|------|----------|
+| 审批权限 | 仅 `system:admin` 权限用户可审批 | ✅ 已实现 |
+| 审批日志 | 记录审批人、审批时间、审批结果（APPROVED/REJECTED）、备注 | ✅ 已实现 |
+| 拒绝原因 | 审批拒绝时必须填写原因 | ✅ 已实现 |
+
+**d. 审批后字段同步**
+
+审批通过时，将注册申请中的 `callbackFields` 和 `resultQueryPath` 同步到对应的 `ExternalSystemRegistration` 记录，供任务分发时使用。
+
+#### 2.2.7 回传字段配置
+
+外部系统向 TMS 声明可提供的回传字段，TMS 管理员可随时调整需要拉取的字段子集。外部系统提供一个统一的 API 端点，根据 TMS 请求中指定的字段类型返回对应数据，未请求字段不返回。
+
+**a. 回传字段枚举**
+
+| 字段枚举值 | 中文标签 | 必选 | 说明 |
+|-----------|---------|------|------|
+| TASK_ID | 任务ID | ✅ | 外部系统任务唯一标识 |
+| STATUS | 任务状态 | ✅ | 任务当前状态 |
+| NAME | 任务名称 | ✅ | 任务名称 |
+| OPERATOR | 操作员 | ✅ | 执行操作的人员 |
+| WORKLOAD | 任务量 | ✅ | 双精度，任务工作量 |
+| UNIT | 任务计量单位 | ✅ | 字符串，任务计量单位 |
+| START_TIME | 开始时间 | ❌ | 任务开始执行时间 |
+| END_TIME | 完成时间 | ❌ | 任务完成时间 |
+| LOCATION | 位置信息 | ❌ | 位置数据，可能是点、线、面 |
+| REMARKS | 备注信息 | ❌ | 备注说明 |
+
+**b. 字段配置方式**
+
+| 配置阶段 | 说明 |
+|----------|------|
+| 申请时声明 | 外部系统在提交注册申请时声明可提供的全部回传字段（`callbackFields`）和统一查询路径（`resultQueryPath`） |
+| 审批后可改 | TMS 管理员审批通过后，可随时通过 `PUT /{id}/callback-fields` 调整需要拉取的字段子集；必选字段始终包含，不可取消 |
+| 同步机制 | 审批通过或更新字段配置时，自动将 callbackFields/resultQueryPath 同步到 ExternalSystemRegistration |
+
+**c. 统一结果查询 API 模式**
+
+| 需求项 | 说明 | 实现状态 |
+|--------|------|----------|
+| 统一查询端点 | 外部系统提供一个 API 端点（`resultQueryPath`），TMS 按需调用 | ✅ 已实现 |
+| 字段过滤 | TMS 在请求中指定需要返回的字段类型（`callback_fields`），外部系统仅返回请求的字段 | ✅ 已实现 |
+| 下发时传递 | TMS 下发任务时将 `callback_fields`（来自 ExternalSystemRegistration.callbackFields）传入 payload | ✅ 已实现 |
+| 运行时替换 | `resultQueryPath` 中的 `{id}` 占位符在运行时替换为实际任务 ID | ✅ 已实现 |
 
 ***
 
@@ -1058,9 +1145,16 @@ Task 实体新增 `controller_id` 字段（UUID，可空）。非叶子节点（
 | MeasurementUnitDefinition  | 计量单位字典，预置与自定义单位统一管理，要求名称/编码唯一                 | UUID / code |
 | TaskAttachment             | 项目/任务附件（taskId FK + 文件名 + 存储路径 + 上传人 + 上传时间）  | UUID        |
 | TaskActionAttachment       | 操作附件（v1.16，taskId FK + action + type，FILE/LINK 两种，仅接收人可见） | UUID        |
-| ExternalSystemRegistration | 外部系统注册表                                       | systemId    |
+| ExternalSystemRegistration | 外部系统注册表（含 callbackFields、resultQueryPath）            | systemId    |
+| TaskTypeRegistration       | 任务类型注册申请表（含审批流程、callbackFields、resultQueryPath）    | UUID        |
 
-### 3.3 历史字段（已废弃/已移除）
+### 3.3 枚举扩展
+
+| 枚举 | 值 | 说明 |
+|------|------|------|
+| CallbackField | TASK_ID / STATUS / NAME / OPERATOR / WORKLOAD / UNIT / START\_TIME / END\_TIME / LOCATION / REMARKS | 外部系统可提供的回传字段类型，前 6 个为必选，后 4 个为可选 |
+
+### 3.4 历史字段（已废弃/已移除）
 
 | 字段 | 类型 | 状态 | 说明 |
 |------|------|------|------|
@@ -1140,9 +1234,9 @@ P 进度 = (90×1×60000 + 70×1×40000) / (1×60000 + 1×40000) = 82
 
 | 交互       | 方向             | 内容                                                                      |
 | -------- | -------------- | ----------------------------------------------------------------------- |
-| 系统注册     | 外部系统 → TMS     | ssoClientId + supportedTaskTypes + callbackPath + dashboardUrl          |
+| 系统注册     | 外部系统 → TMS     | ssoClientId + supportedTaskTypes + callbackPath + dashboardUrl + resultViewUrl + callbackFields + resultQueryPath |
 | SSO 登出绑定 | 外部系统 → SSO     | 首次登录后自行绑定登出回调（TMS 不参与）                                                  |
-| 项目分发     | TMS → 外部系统     | 项目基本信息（内网无认证）                                                           |
+| 项目分发     | TMS → 外部系统     | 项目基本信息 + callback\_fields（内网无认证）                                                           |
 | 外部推送     | 外部系统 → TMS     | 只接收顶层项目，不接收子任务（子任务由 TMS 内部创建）                                           |
 | 接收确认     | 外部系统 → TMS     | 回调 RECEIVED 确认已接收分发任务                                                   |
 | 状态同步     | 外部系统 → TMS     | 仅平台标准生产状态（PENDING/ASSIGNED/RECEIVED/IN\_PROGRESS/PAUSED/COMPLETED/FAILED）；外部 COMPLETED 映射为 TMS `SUBMITTED_FOR_QA`，不直接映射为 `QA_COMPLETED`；TMS 质检通过后才进入 `QA_COMPLETED` |
@@ -1150,6 +1244,10 @@ P 进度 = (90×1×60000 + 70×1×40000) / (1×60000 + 1×40000) = 82
 | 任务完成数据   | 外部系统 → TMS     | completion-data（含阶段责任人、工作量）                                             |
 | 人员工作统计   | TMS → 外部系统     | personnel-stats（可选，第三方应用可自行实现）                                          |
 | 业务详情查看   | TMS 用户 → 第三方应用 | 通过 dashboardUrl 跳转，SSO 互通免登录                                            |
+| 任务类型注册申请 | 外部系统 → TMS     | typeCode + typeName + callbackPath + resultViewUrl + interfaceManifest + callbackFields + resultQueryPath |
+| 注册审批     | TMS 管理员 → TMS     | 审批通过（选择分组）或拒绝（填写原因）；仅 system:admin 权限                                     |
+| 回传字段配置   | TMS 管理员 → TMS     | 更新需要拉取的字段子集（PUT /{id}/callback-fields）；审批后可随时修改                              |
+| 结果数据查询   | TMS → 外部系统     | 按 resultQueryPath + callback\_fields 拉取指定字段的结果数据                            |
 
 ### 4.2 不交互的内容
 
@@ -1241,6 +1339,17 @@ P 进度 = (90×1×60000 + 70×1×40000) / (1×60000 + 1×40000) = 82
 | 28 | P1 差异项优先级排序正确     | 是（已移除"待落地差异项"章节，P1 项已融入 2.1.x） |
 | 29 | TMS 端开发优先于 BRS 端  | 是（五、建议实施顺序）                    |
 | 30 | 前端对接可在后端改造完成后并行推进 | 是（五、建议实施顺序）                    |
+
+### 6.6 任务类型注册审批与回传字段配置确认
+
+| #  | 确认项 | 确认结果 |
+| -- | ----- | ------ |
+| 31 | BRS 相关类型（项目类型 BRIDGE_REMOVAL_BATCH、任务类型 BRIDGE_REMOVAL_BATCH）禁止系统启动时自动注册，必须通过 BRS 向 TMS 提交注册申请；BRS 仅注册批处理类型，单元处理为 BRS 内部概念 | 是（2.2.6） |
+| 32 | 任务类型注册审批仅 system:admin 权限可操作，审批通过需选择分组，拒绝需填写原因 | 是（2.2.6） |
+| 33 | callbackPath 为 TMS→外部系统任务下发入口，resultViewUrl 为 TMS 用户查看外部系统任务结果的页面，语义不同 | 是（2.2.2） |
+| 34 | resultViewUrl 使用 URL 模板（含 `{id}` 占位符），运行时替换为实际任务 ID | 是（2.2.2） |
+| 35 | 外部系统在注册申请时声明可提供的回传字段列表和统一查询路径；TMS 管理员审批后可随时调整需要拉取的字段子集 | 是（2.2.7） |
+| 36 | 外部系统提供一个统一的 API 端点，根据 TMS 请求中指定的字段类型返回对应数据，未请求字段不返回 | 是（2.2.7） |
 
 ***
 

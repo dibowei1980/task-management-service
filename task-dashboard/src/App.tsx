@@ -11,6 +11,7 @@ import { UserProfile } from './components/profile/UserProfile';
 import { ProjectTypeManagementPage } from './components/settings/ProjectTypeManagementPage';
 import { TaskTypeManagementPage } from './components/settings/TaskTypeManagementPage';
 import { MeasurementUnitManagementPage } from './components/settings/MeasurementUnitManagementPage';
+import { TaskTypeRegistrationPage } from './components/settings/TaskTypeRegistrationPage';
 
 function App() {
   return (
@@ -28,6 +29,7 @@ function App() {
               <Route path="/profile" element={<UserProfile />} />
               <Route path="/settings/project-types" element={<ProjectTypeManagementPage />} />
               <Route path="/settings/task-types" element={<TaskTypeManagementPage />} />
+              <Route path="/settings/task-type-registrations" element={<TaskTypeRegistrationPage />} />
               <Route path="/settings/measurement-units" element={<MeasurementUnitManagementPage />} />
 
               <Route element={<PermissionBasedRoute allowedPermissions={['project:read_global', 'project:read_department', 'project:read_own', 'task:read_global', 'task:read_department', 'task:read_project']} />}>

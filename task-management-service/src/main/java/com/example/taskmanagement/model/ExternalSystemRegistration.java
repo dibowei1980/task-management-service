@@ -22,6 +22,15 @@ public class ExternalSystemRegistration {
     @Column(name = "dashboard_url", length = 512)
     private String dashboardUrl;
 
+    @Column(name = "result_view_url", length = 512)
+    private String resultViewUrl;
+
+    @Column(name = "callback_fields", length = 512)
+    private String callbackFields;
+
+    @Column(name = "result_query_path", length = 256)
+    private String resultQueryPath;
+
     @Column(nullable = false)
     private String supportedTaskTypes;
 
@@ -47,6 +56,15 @@ public class ExternalSystemRegistration {
 
     public String getDashboardUrl() { return dashboardUrl; }
     public void setDashboardUrl(String dashboardUrl) { this.dashboardUrl = dashboardUrl; }
+
+    public String getResultViewUrl() { return resultViewUrl; }
+    public void setResultViewUrl(String resultViewUrl) { this.resultViewUrl = resultViewUrl; }
+
+    public String getCallbackFields() { return callbackFields; }
+    public void setCallbackFields(String callbackFields) { this.callbackFields = callbackFields; }
+
+    public String getResultQueryPath() { return resultQueryPath; }
+    public void setResultQueryPath(String resultQueryPath) { this.resultQueryPath = resultQueryPath; }
 
     public String getSupportedTaskTypes() { return supportedTaskTypes; }
     public void setSupportedTaskTypes(String supportedTaskTypes) { this.supportedTaskTypes = supportedTaskTypes; }

@@ -85,7 +85,7 @@ export const BridgeTaskLocatePage: React.FC = () => {
   const [loadSeq, setLoadSeq] = useState(0);
   const [editMask, setEditMask] = useState(false);
   const [viewMode, setViewMode] = useState<'dom' | 'segment' | 'segment_result' | 'merged_result'>(
-    tabByQuery === 'dom' ? 'dom' : (editByQuery ? 'segment' : 'segment_result')
+    tabByQuery === 'dom' ? 'dom' : (tabByQuery === 'result' ? 'segment_result' : (editByQuery ? 'segment' : 'segment_result'))
   );
   const [showBridgeRange, setShowBridgeRange] = useState(initialDisplayPrefs?.showBridgeRange ?? true);
   const [showCenterline, setShowCenterline] = useState(initialDisplayPrefs?.showCenterline ?? true);

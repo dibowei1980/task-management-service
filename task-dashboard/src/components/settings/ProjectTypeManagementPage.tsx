@@ -67,6 +67,26 @@ export const ProjectTypeManagementPage: React.FC = () => {
     }
   };
 
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const handleDelete = async (item: ProjectTypeDefinition) => {
+    if (item.referenceCount > 0) {
+      setError(`项目类型「${item.name}」已被 ${item.referenceCount} 个项目引用，无法删除`);
+      return;
+    }
+    if (!window.confirm(`确定删除项目类型「${item.name}」(${item.code})？此操作不可撤销。`)) return;
+    setDeletingId(item.id);
+    setError(null);
+    try {
+      await projectTypeService.delete(item.id);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '删除项目类型失败');
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   const handleToggle = async (item: ProjectTypeDefinition) => {
     try {
       await projectTypeService.toggle(item.id, !item.enabled);
@@ -151,6 +171,7 @@ export const ProjectTypeManagementPage: React.FC = () => {
                   <td className="px-5 py-3 text-right space-x-3">
                     <button type="button" onClick={() => handleEdit(item)} className="text-blue-600 hover:underline">编辑</button>
                     <button type="button" onClick={() => void handleToggle(item)} className="text-amber-600 hover:underline">{item.enabled ? '停用' : '启用'}</button>
+                    <button type="button" onClick={() => void handleDelete(item)} disabled={deletingId === item.id} className="text-red-600 hover:underline disabled:opacity-40">{deletingId === item.id ? '删除中...' : '删除'}</button>
                   </td>
                 </tr>
               ))}

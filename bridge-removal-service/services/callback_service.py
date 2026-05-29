@@ -31,7 +31,7 @@ def is_local_mode():
     return not _task_management_available
 
 
-def callback_task_status(task_id, workflow_status, results=None):
+def callback_task_status(task_id, workflow_status, results=None, total_sub_task_count=None):
     global _task_management_available
     if not _task_management_available:
         logger.debug(f"Skipped callback for task {task_id}: task-management-service unavailable")
@@ -51,6 +51,8 @@ def callback_task_status(task_id, workflow_status, results=None):
         if isinstance(results, dict):
             results = json.dumps(results, ensure_ascii=False)
         payload["results"] = results
+    if total_sub_task_count is not None:
+        payload["totalSubTaskCount"] = total_sub_task_count
     try:
         resp = requests.patch(callback_url, json=payload, headers=headers, timeout=10)
         logger.info(f"Callback task {task_id} status={platform_status}: {resp.status_code}")
@@ -74,6 +76,55 @@ def check_task_management():
     return _task_management_available
 
 
+def _submit_task_type_registration(tms_url: str, tms_token: str, brs_url: str, sso_client_id: str) -> bool:
+    reg_url = f"{tms_url}/task-type-registrations"
+    brs_port = int(os.getenv("BRIDGE_REMOVAL_PORT", "5050"))
+    dashboard_url = os.getenv("BRIDGE_DASHBOARD_URL", "http://127.0.0.1:5174")
+    task_types = [
+        {
+            "code": "BRIDGE_REMOVAL_BATCH",
+            "name": "桥梁去除（批次）",
+            "sourceSystem": "桥梁去除系统",
+            "systemId": "bridge-removal-app",
+            "displayName": "桥梁去除系统",
+            "serviceUrl": brs_url,
+            "dashboardUrl": dashboard_url,
+            "callbackPath": "/api/v1/projects/{id}/execute",
+            "ssoClientId": sso_client_id,
+            "resultViewUrl": f"{dashboard_url}/tasks/{{id}}/locate?tab=result",
+            "callbackFields": ["TASK_ID", "STATUS", "NAME", "OPERATOR", "WORKLOAD", "UNIT", "START_TIME", "END_TIME", "LOCATION", "REMARKS"],
+            "resultQueryPath": "/api/v1/projects/{id}/result",
+            "interfaceManifest": [
+                {"name": "任务执行回调", "version": "1.0", "method": "POST", "description": "TMS下发任务到BRS执行接口"},
+                {"name": "状态回调", "version": "1.0", "method": "PATCH", "description": "BRS向TMS同步工作流状态"},
+            ],
+        },
+    ]
+    reg_headers = {"Content-Type": "application/json"}
+    if tms_token:
+        reg_headers["Authorization"] = f"Bearer {tms_token}"
+    all_submitted = True
+    for tt in task_types:
+        try:
+            resp = requests.post(reg_url, json=tt, headers=reg_headers, timeout=10)
+            if resp.status_code in (200, 201):
+                logger.info("Task type registration submitted: %s", tt["code"])
+            elif resp.status_code == 400:
+                detail = resp.text[:200]
+                if "已存在" in detail:
+                    logger.info("Task type registration already exists: %s", tt["code"])
+                else:
+                    logger.warning("Task type registration rejected for %s: %s", tt["code"], detail)
+                    all_submitted = False
+            else:
+                logger.warning("Task type registration returned %s for %s: %s", resp.status_code, tt["code"], resp.text[:200])
+                all_submitted = False
+        except Exception as e:
+            logger.warning("Failed to submit task type registration for %s: %s", tt["code"], e)
+            all_submitted = False
+    return all_submitted
+
+
 def register_with_task_management():
     global _task_management_available, _tms_registered
     with _registration_lock:
@@ -84,14 +135,22 @@ def register_with_task_management():
         brs_port = int(os.getenv("BRIDGE_REMOVAL_PORT", "5050"))
         brs_url = os.getenv("BRIDGE_REMOVAL_SERVICE_URL", f"http://localhost:{brs_port}")
         sso_client_id = os.getenv("SSO_CLIENT_ID", "bridge-removal-service")
+
+        dashboard_url = os.getenv("BRIDGE_DASHBOARD_URL", "http://127.0.0.1:5174")
+
+        _submit_task_type_registration(tms_url, tms_token, brs_url, sso_client_id)
+
         register_url = f"{tms_url}/external-systems/register"
         payload = {
             "systemId": "bridge-removal-app",
             "displayName": "桥梁去除系统",
             "serviceUrl": brs_url,
             "ssoClientId": sso_client_id,
-            "dashboardUrl": os.getenv("BRIDGE_DASHBOARD_URL", "http://127.0.0.1:5174"),
-            "supportedTaskTypes": ["BRIDGE_REMOVAL_BATCH", "BRIDGE_REMOVAL_UNIT"],
+            "dashboardUrl": dashboard_url,
+            "resultViewUrl": f"{dashboard_url}/tasks/{{id}}/locate?tab=result",
+            "supportedTaskTypes": ["BRIDGE_REMOVAL_BATCH"],
+            "callbackFields": ["TASK_ID", "STATUS", "NAME", "OPERATOR", "WORKLOAD", "UNIT", "START_TIME", "END_TIME", "LOCATION", "REMARKS"],
+            "resultQueryPath": "/api/v1/projects/{id}/result",
             "callbackPath": "/api/v1/projects/{id}/execute"
         }
         try:

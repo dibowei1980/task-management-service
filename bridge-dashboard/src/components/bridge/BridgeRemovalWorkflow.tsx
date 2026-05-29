@@ -630,7 +630,7 @@ export const BridgeRemovalWorkflow: React.FC<{ projectId?: string }> = ({ projec
   );
 
   const renderView = (task: BridgeTask) => (
-    <button className="text-blue-600 hover:text-blue-900" type="button" onClick={() => navigate(`/tasks/${task.id}/locate?tab=dom`)}>
+    <button className="text-blue-600 hover:text-blue-900" type="button" onClick={() => navigate(`/tasks/${task.id}/locate?tab=result`)}>
       查看
     </button>
   );

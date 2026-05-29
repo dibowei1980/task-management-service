@@ -65,7 +65,7 @@ public class TaskTypeServiceImpl implements TaskTypeService {
         entity.setName(request.getName().trim());
         entity.setGroup(group);
         entity.setDescription(request.getDescription());
-        entity.setSource("CUSTOM");
+        entity.setSource(request.getSource() == null || request.getSource().isBlank() ? "CUSTOM" : request.getSource().trim());
         entity.setEnabled(request.getEnabled() == null || request.getEnabled());
         return toResponse(repository.save(entity));
     }
@@ -100,6 +100,30 @@ public class TaskTypeServiceImpl implements TaskTypeService {
                 .orElseThrow(() -> new IllegalArgumentException("task type not found"));
         entity.setEnabled(enabled);
         repository.save(entity);
+    }
+
+    @Override
+    @Transactional
+    @CacheEvict(value = "taskTypes", allEntries = true)
+    public void delete(UUID id) {
+        TaskTypeDefinition entity = repository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("task type not found"));
+        if (entity.getReferenceCount() != null && entity.getReferenceCount() > 0) {
+            throw new IllegalArgumentException("任务类型已被引用，不能删除");
+        }
+        repository.delete(entity);
+    }
+
+    @Override
+    @Transactional
+    @CacheEvict(value = "taskTypes", allEntries = true)
+    public void deleteByCode(String code) {
+        repository.findByCodeIgnoreCase(code.trim().toUpperCase()).ifPresent(entity -> {
+            if (entity.getReferenceCount() != null && entity.getReferenceCount() > 0) {
+                throw new IllegalArgumentException("任务类型已被引用，不能删除: " + code);
+            }
+            repository.delete(entity);
+        });
     }
 
     @Override

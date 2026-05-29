@@ -14,5 +14,7 @@ public interface TaskTypeService {
     TaskTypeResponse create(TaskTypeRequest request);
     TaskTypeResponse update(UUID id, TaskTypeRequest request);
     void setEnabled(UUID id, boolean enabled);
+    void delete(UUID id);
+    void deleteByCode(String code);
     void validateTypeCodeUsable(String code);
 }

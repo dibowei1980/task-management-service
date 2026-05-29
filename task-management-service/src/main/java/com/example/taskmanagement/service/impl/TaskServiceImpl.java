@@ -1024,6 +1024,12 @@ public class TaskServiceImpl implements TaskService {
             }
             task.setWorkload(request.getCompletedWorkload());
         }
+        if (request.getTotalSubTaskCount() != null) {
+            if (request.getTotalSubTaskCount() < 0) {
+                throw new IllegalArgumentException("totalSubTaskCount must be >= 0");
+            }
+            task.setWorkload(Double.valueOf(request.getTotalSubTaskCount()));
+        }
         if (request.getWorkloadUnit() != null) {
             String unit = request.getWorkloadUnit().trim();
             if (unit.isEmpty()) {
@@ -1070,6 +1076,7 @@ public class TaskServiceImpl implements TaskService {
                 || request.getTaskId() != null
                 || request.getCompletedWorkload() != null
                 || request.getWorkloadUnit() != null
+                || request.getTotalSubTaskCount() != null
                 || normalizedStageResponsibles != null) {
             java.util.Map<String, Object> completionData = new java.util.HashMap<>();
             completionData.put("receivedAt", java.time.ZonedDateTime.now().toString());
@@ -1082,6 +1089,9 @@ public class TaskServiceImpl implements TaskService {
             }
             if (request.getWorkloadUnit() != null) {
                 completionData.put("workloadUnit", request.getWorkloadUnit().trim());
+            }
+            if (request.getTotalSubTaskCount() != null) {
+                completionData.put("totalSubTaskCount", request.getTotalSubTaskCount());
             }
             if (normalizedStageResponsibles != null) {
                 completionData.put("stageResponsibles", normalizedStageResponsibles);

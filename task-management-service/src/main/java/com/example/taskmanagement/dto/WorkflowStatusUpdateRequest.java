@@ -17,6 +17,7 @@ public class WorkflowStatusUpdateRequest {
     private UUID taskId;
     private Double completedWorkload;
     private String workloadUnit;
+    private Integer totalSubTaskCount;
     private List<StageResponsible> stageResponsibles;
 
     public static class StageResponsible {
@@ -144,6 +145,14 @@ public class WorkflowStatusUpdateRequest {
 
     public void setWorkloadUnit(String workloadUnit) {
         this.workloadUnit = workloadUnit;
+    }
+
+    public Integer getTotalSubTaskCount() {
+        return totalSubTaskCount;
+    }
+
+    public void setTotalSubTaskCount(Integer totalSubTaskCount) {
+        this.totalSubTaskCount = totalSubTaskCount;
     }
 
     public List<StageResponsible> getStageResponsibles() {

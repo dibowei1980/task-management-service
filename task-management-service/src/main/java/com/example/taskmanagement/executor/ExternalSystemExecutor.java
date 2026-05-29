@@ -56,6 +56,14 @@ public class ExternalSystemExecutor implements TaskExecutor {
         payload.put("input_params", inputParams);
         payload.put("callback_url", taskManagementApiUrl + "/tasks/" + task.getId() + "/workflow-status");
 
+        if (system.getCallbackFields() != null && !system.getCallbackFields().isBlank()) {
+            try {
+                List<String> fields = objectMapper.readValue(system.getCallbackFields(), objectMapper.getTypeFactory().constructCollectionType(List.class, String.class));
+                payload.put("callback_fields", fields);
+            } catch (Exception ignored) {
+            }
+        }
+
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
 
@@ -65,6 +73,10 @@ public class ExternalSystemExecutor implements TaskExecutor {
             logger.info("Dispatching task {} (type={}) to external system {} at {}", task.getId(), task.getType(), system.getSystemId(), fullUrl);
             ResponseEntity<Map> response = restTemplate.exchange(fullUrl, HttpMethod.POST, entity, Map.class);
             logger.info("External system {} responded: {} for task {}", system.getSystemId(), response.getStatusCode(), task.getId());
+
+            if (system.getResultViewUrl() != null && !system.getResultViewUrl().isBlank()) {
+                task.setExternalUrl(system.getResultViewUrl().replace("{id}", task.getId().toString()));
+            }
         } catch (Exception e) {
             logger.error("Failed to dispatch task {} to external system {}: {}", task.getId(), system.getSystemId(), e.getMessage());
             throw new RuntimeException("Failed to dispatch task to external system: " + e.getMessage(), e);

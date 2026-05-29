@@ -1,6 +1,6 @@
 # TPM 外部系统 API 手册
 
-> 版本：v1.19 | 基础路径：`http://{host}:8082/api`
+> 版本：v1.20 | 基础路径：`http://{host}:8082/api`
 > 认证方式：SSO OAuth2 授权码模式，请求头携带 `Authorization: Bearer {jwt_token}`
 
 ---
@@ -9,13 +9,15 @@
 
 1. [认证](#1-认证)
 2. [外部系统注册](#2-外部系统注册)
-3. [任务推送与同步](#3-任务推送与同步)
-4. [任务状态与进度回调](#4-任务状态与进度回调)
-5. [任务完成数据上报](#5-任务完成数据上报)
-6. [人员工作统计查询](#6-人员工作统计查询)
-7. [实时通知订阅](#7-实时通知订阅)
-8. [状态枚举参考](#8-状态枚举参考)
-9. [对接示例](#9-对接示例)
+3. [任务类型注册审批](#3-任务类型注册审批)
+4. [回传字段配置](#4-回传字段配置)
+5. [任务推送与同步](#5-任务推送与同步)
+6. [任务状态与进度回调](#6-任务状态与进度回调)
+7. [任务完成数据上报](#7-任务完成数据上报)
+8. [人员工作统计查询](#8-人员工作统计查询)
+9. [实时通知订阅](#9-实时通知订阅)
+10. [状态枚举参考](#10-状态枚举参考)
+11. [对接示例](#11-对接示例)
 
 ---
 
@@ -123,7 +125,10 @@ Content-Type: application/json
 | ssoClientId | string | 是 | 该系统在 SSO 注册的客户端 ID，TPM 校验白名单 |
 | dashboardUrl | string | 否 | 系统面板 URL，TPM 用户可跳转查看业务详情（SSO 互通免登录） |
 | supportedTaskTypes | string[] | 是 | 支持的任务类型编码列表，必须为 TPM 中已启用的类型 |
-| callbackPath | string | 是 | 回调相对路径，拼接 serviceUrl 使用，如 `/api/callback` |
+| callbackPath | string | 是 | 回调相对路径，拼接 serviceUrl 使用，如 `/api/v1/projects/{id}/execute` |
+| resultViewUrl | string | 否 | 任务结果查看页面 URL 模板，如 `http://localhost:5174/tasks/{id}/locate?tab=result`；`{id}` 占位符在运行时替换为实际任务 ID |
+| callbackFields | string[] | 否 | 外部系统可提供的回传字段列表，枚举值：TASK_ID/STATUS/NAME/OPERATOR/WORKLOAD/UNIT/START_TIME/END_TIME/LOCATION/REMARKS |
+| resultQueryPath | string | 否 | 外部系统统一结果查询 API 路径模板，如 `/api/v1/projects/{id}/result`；`{id}` 占位符在运行时替换为实际任务 ID |
 
 **请求示例**：
 
@@ -135,7 +140,10 @@ Content-Type: application/json
   "ssoClientId": "bridge-removal-sso-client",
   "dashboardUrl": "http://bridge-dashboard:5174",
   "supportedTaskTypes": ["BRIDGE_REMOVAL"],
-  "callbackPath": "/api/callback"
+  "callbackPath": "/api/v1/projects/{id}/execute",
+  "resultViewUrl": "http://localhost:5174/tasks/{id}/locate?tab=result",
+  "callbackFields": ["TASK_ID", "STATUS", "NAME", "OPERATOR", "WORKLOAD", "UNIT", "START_TIME", "END_TIME", "LOCATION", "REMARKS"],
+  "resultQueryPath": "/api/v1/projects/{id}/result"
 }
 ```
 
@@ -181,9 +189,152 @@ Authorization: Bearer {jwt_token}
 
 ---
 
-## 3. 任务推送与同步
+## 3. 任务类型注册审批
 
-### 3.1 推送顶层项目（推荐）
+### 3.1 提交任务类型注册申请
+
+外部系统向 TMS 提交任务类型注册申请。
+
+```
+POST /api/task-type-registrations
+Authorization: Bearer {jwt_token}
+Content-Type: application/json
+```
+
+**请求体**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| typeCode | string | 是 | 任务类型代码（唯一标识符） |
+| typeName | string | 是 | 任务类型名称 |
+| groupId | string | 否 | 任务类型分组 ID（审批时由管理员选择） |
+| systemId | string | 否 | 申请的外部系统标识 |
+| callbackPath | string | 否 | 任务分发路径模板 |
+| resultViewUrl | string | 否 | 任务结果查看页面 URL 模板 |
+| interfaceManifest | string | 否 | TMS 对接接口清单（JSON 字符串） |
+| callbackFields | string[] | 否 | 外部系统可提供的回传字段列表 |
+| resultQueryPath | string | 否 | 外部系统统一结果查询 API 路径模板 |
+
+**请求示例**：
+
+```json
+{
+  "typeCode": "BRIDGE_REMOVAL_BATCH",
+  "typeName": "桥梁去除（批次）",
+  "callbackPath": "/api/v1/projects/{id}/execute",
+  "resultViewUrl": "http://localhost:5174/tasks/{id}/locate?tab=result",
+  "callbackFields": ["TASK_ID", "STATUS", "NAME", "OPERATOR", "WORKLOAD", "UNIT", "START_TIME", "END_TIME", "LOCATION", "REMARKS"],
+  "resultQueryPath": "/api/v1/projects/{id}/result"
+}
+```
+
+**响应**：`200 OK` 返回注册申请信息（含 `id`、`status: PENDING`）；`409 Conflict` 表示类型代码已存在。
+
+### 3.2 查询注册申请列表
+
+```
+GET /api/task-type-registrations
+Authorization: Bearer {jwt_token}
+```
+
+**查询参数**：
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| status | string | 按状态筛选：PENDING / APPROVED / REJECTED |
+
+### 3.3 审批注册申请（通过）
+
+```
+POST /api/task-type-registrations/{id}/approve
+Authorization: Bearer {jwt_token}
+Content-Type: application/json
+```
+
+需要 `system:admin` 权限。
+
+**请求体**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| groupId | string | 是 | 将任务类型添加到的分组 ID |
+| remark | string | 否 | 审批备注 |
+
+### 3.4 审批注册申请（拒绝）
+
+```
+POST /api/task-type-registrations/{id}/reject
+Authorization: Bearer {jwt_token}
+Content-Type: application/json
+```
+
+需要 `system:admin` 权限。
+
+**请求体**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| remark | string | 是 | 拒绝原因（必填） |
+
+---
+
+## 4. 回传字段配置
+
+### 4.1 更新回传字段配置
+
+TMS 管理员审批通过后，可随时调整需要拉取的字段子集。
+
+```
+PUT /api/task-type-registrations/{id}/callback-fields
+Authorization: Bearer {jwt_token}
+Content-Type: application/json
+```
+
+需要 `system:admin` 权限。
+
+**请求体**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| callbackFields | string[] | 是 | 需要拉取的回传字段列表；必选字段（TASK_ID/STATUS/NAME/OPERATOR/WORKLOAD/UNIT）始终包含，不可取消 |
+
+**请求示例**：
+
+```json
+{
+  "callbackFields": ["TASK_ID", "STATUS", "NAME", "OPERATOR", "WORKLOAD", "UNIT", "START_TIME", "LOCATION"]
+}
+```
+
+**响应**：`200 OK` 返回更新后的注册申请信息。
+
+**字段枚举值**：
+
+| 枚举值 | 中文标签 | 必选 |
+|--------|---------|------|
+| TASK_ID | 任务ID | ✅ |
+| STATUS | 任务状态 | ✅ |
+| NAME | 任务名称 | ✅ |
+| OPERATOR | 操作员 | ✅ |
+| WORKLOAD | 任务量 | ✅ |
+| UNIT | 任务计量单位 | ✅ |
+| START_TIME | 开始时间 | ❌ |
+| END_TIME | 完成时间 | ❌ |
+| LOCATION | 位置信息 | ❌ |
+| REMARKS | 备注信息 | ❌ |
+
+### 4.2 回传字段同步机制
+
+审批通过或更新字段配置时，自动将 `callbackFields` 和 `resultQueryPath` 同步到 `ExternalSystemRegistration`，供任务分发时使用：
+- TMS 下发任务时将 `callback_fields`（来自 `ExternalSystemRegistration.callbackFields`）传入 payload
+- 外部系统根据请求中的 `callback_fields` 仅返回请求字段的数据
+- `resultQueryPath` 中的 `{id}` 占位符在运行时替换为实际任务 ID
+
+---
+
+## 5. 任务推送与同步
+
+### 5.1 推送顶层项目（推荐）
 
 外部系统只推送顶层项目，子任务由 TPM 内部创建和管理。
 
@@ -243,7 +394,7 @@ Content-Type: application/json
 
 **幂等说明**：若 `externalSystem` + `externalTaskId` 组合已存在，则更新已有项目而非重复创建。
 
-### 3.2 推送单个任务（upsert）
+### 5.2 推送单个任务（upsert）
 
 ```
 POST /api/tasks/external/tasks/upsert
@@ -255,7 +406,7 @@ Content-Type: application/json
 
 **请求体**：同 [TaskCreateRequest](#taskcreaterequest-字段)，其中 `externalSystem` 和 `externalTaskId` 为必填。
 
-### 3.3 创建任务（通用）
+### 5.3 创建任务（通用）
 
 ```
 POST /api/tasks
@@ -265,14 +416,14 @@ Content-Type: application/json
 
 需要 `project:create` 权限。请求体同 TaskCreateRequest。
 
-### 3.4 查询任务
+### 5.4 查询任务
 
 ```
 GET /api/tasks/{id}
 Authorization: Bearer {jwt_token}
 ```
 
-### 3.5 查询任务列表
+### 5.5 查询任务列表
 
 ```
 GET /api/tasks?page=0&size=20&category=PROJECT&externalSystem=bridge-removal
@@ -287,14 +438,14 @@ Authorization: Bearer {jwt_token}
 | category | string | 任务类别过滤：PROJECT / PHASE / OPERATION_TASK / SELF_CHECK_TASK |
 | externalSystem | string | 按外部系统标识过滤 |
 
-### 3.6 查询子任务
+### 5.6 查询子任务
 
 ```
 GET /api/tasks/{id}/subtasks
 Authorization: Bearer {jwt_token}
 ```
 
-### 3.7 更新任务
+### 5.7 更新任务
 
 ```
 PUT /api/tasks/{id}
@@ -304,7 +455,7 @@ Content-Type: application/json
 
 请求体同 TaskUpdateRequest，所有字段可选。
 
-### 3.8 删除任务
+### 5.8 删除任务
 
 ```
 DELETE /api/tasks/{id}
@@ -315,11 +466,11 @@ Authorization: Bearer {jwt_token}
 
 ---
 
-## 4. 任务状态与进度回调
+## 6. 任务状态与进度回调
 
 外部系统通过以下接口回调 TPM 更新任务状态和进度。
 
-### 4.1 更新工作流状态（核心回调接口）
+### 6.1 更新工作流状态（核心回调接口）
 
 外部系统通过此接口向 TPM 回报任务进度、状态变更和完成数据。
 
@@ -340,6 +491,7 @@ Content-Type: application/json
 | taskId | string(UUID) | 否 | 任务 ID，若提供必须与路径参数一致 |
 | completedWorkload | double | 否 | 已完成工作量 |
 | workloadUnit | string | 否 | 工作量单位编码 |
+| totalSubTaskCount | int | 否 | 总子任务数量，TMS 将其设置为任务 workload，用于进度计算 |
 | intermediatePath | string | 否 | 中间产物路径 |
 | commentStage | string | 否 | 评论阶段 |
 | commentResult | string | 否 | 评论结果 |
@@ -368,7 +520,7 @@ Content-Type: application/json
 
 **重要**：外部系统回调 `COMPLETED` 状态时，TPM 自动映射为 `SUBMITTED_FOR_QA`，不直接进入 `QA_COMPLETED`。TMS 质检通过后才标记为完成。
 
-### 4.2 更新状态工作量
+### 6.2 更新状态工作量
 
 直接更新叶子任务各状态的工作量分布。
 
@@ -394,7 +546,7 @@ Content-Type: application/json
 
 各阶段工作量之和应等于任务总工作量。TPM 根据各阶段工作量自动计算进度百分比。
 
-### 4.3 更新任务状态
+### 6.3 更新任务状态
 
 ```
 PATCH /api/tasks/{id}/status?status={TaskStatus}
@@ -403,7 +555,7 @@ Authorization: Bearer {jwt_token}
 
 **status 参数**：TaskStatus 枚举值，见 [8.1 TaskStatus](#81-taskstatus)。
 
-### 4.4 触发任务执行
+### 6.4 触发任务执行
 
 ```
 POST /api/tasks/{id}/execute
@@ -414,7 +566,7 @@ Authorization: Bearer {jwt_token}
 
 ---
 
-## 5. 任务完成数据上报
+## 7. 任务完成数据上报
 
 外部系统完成任务后，通过此接口上报完成数据，包括阶段责任人信息。
 
@@ -466,7 +618,7 @@ Content-Type: application/json
 
 ---
 
-## 6. 人员工作统计查询
+## 8. 人员工作统计查询
 
 查询某项目下人员的工作量统计，可按时间区间和粒度分组。
 
@@ -506,7 +658,7 @@ Authorization: Bearer {jwt_token}
 
 ---
 
-## 7. 实时通知订阅
+## 9. 实时通知订阅
 
 通过 Server-Sent Events (SSE) 订阅任务变更通知。
 
@@ -525,9 +677,9 @@ data: {"taskId": "uuid", "action": "status-change", "status": "IN_PROGRESS", ...
 
 ---
 
-## 8. 状态枚举参考
+## 10. 状态枚举参考
 
-### 8.1 TaskStatus
+### 10.1 TaskStatus
 
 任务执行状态，10 个值。
 
@@ -548,7 +700,7 @@ data: {"taskId": "uuid", "action": "status-change", "status": "IN_PROGRESS", ...
 - `QA_COMPLETED` 是稳定完成态，不允许直接转为 `FAILED`。发现问题需新建返修任务并关联原任务。
 - 外部系统回调 `COMPLETED` 时，TPM 自动映射为 `SUBMITTED_FOR_QA`，需 TMS 质检通过后才完成。
 
-### 8.2 WorkflowStatus
+### 10.2 WorkflowStatus
 
 项目验收归档阶段，3 个值，仅适用于根项目（PROJECT）。
 
@@ -558,7 +710,7 @@ data: {"taskId": "uuid", "action": "status-change", "status": "IN_PROGRESS", ...
 | ACCEPTANCE_COMPLETED | 验收完成 |
 | ARCHIVED | 已归档（归档后 status 自动设为 COMPLETED） |
 
-### 8.3 TaskCategory
+### 10.3 TaskCategory
 
 | 枚举值 | 说明 |
 |--------|------|
@@ -567,18 +719,35 @@ data: {"taskId": "uuid", "action": "status-change", "status": "IN_PROGRESS", ...
 | OPERATION_TASK | 作业任务（叶子节点） |
 | SELF_CHECK_TASK | 自检任务（叶子节点） |
 
-### 8.4 CompositionMode
+### 10.4 CompositionMode
 
 | 枚举值 | 说明 |
 |--------|------|
 | HOMOGENEOUS | 同质任务——子任务类型相同，进度按 `权重 × 工作量 × 进度` 汇聚 |
 | HETEROGENEOUS | 异质任务——子任务类型不同，进度按 `权重 × 进度` 汇聚 |
 
+### 10.5 CallbackField
+
+回传字段枚举，10 个值。前 6 个为必选，后 4 个为可选。
+
+| 枚举值 | 中文标签 | 必选 | 说明 |
+|--------|---------|------|------|
+| TASK_ID | 任务ID | ✅ | 外部系统任务唯一标识 |
+| STATUS | 任务状态 | ✅ | 任务当前状态 |
+| NAME | 任务名称 | ✅ | 任务名称 |
+| OPERATOR | 操作员 | ✅ | 执行操作的人员 |
+| WORKLOAD | 任务量 | ✅ | 双精度，任务工作量 |
+| UNIT | 任务计量单位 | ✅ | 字符串，任务计量单位 |
+| START_TIME | 开始时间 | ❌ | 任务开始执行时间 |
+| END_TIME | 完成时间 | ❌ | 任务完成时间 |
+| LOCATION | 位置信息 | ❌ | 位置数据，可能是点、线、面 |
+| REMARKS | 备注信息 | ❌ | 备注说明 |
+
 ---
 
-## 9. 对接示例
+## 11. 对接示例
 
-### 9.1 完整对接流程：桥梁去除系统
+### 11.1 完整对接流程：桥梁去除系统
 
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
@@ -620,7 +789,7 @@ data: {"taskId": "uuid", "action": "status-change", "status": "IN_PROGRESS", ...
        │                    │                    │
 ```
 
-### 9.2 Python 对接示例
+### 11.2 Python 对接示例
 
 ```python
 import requests
@@ -809,7 +978,7 @@ stats = client.get_personnel_stats(task_id, interval="day", start_date="2026-05-
 print(f"总工作量: {stats['totalWorkload']} {stats['workloadUnit']}")
 ```
 
-### 9.3 cURL 对接示例
+### 11.3 cURL 对接示例
 
 ```bash
 # 1. 注册外部系统

@@ -8,6 +8,9 @@ public class ExternalSystemRegistrationRequest {
     private String serviceUrl;
     private String ssoClientId;
     private String dashboardUrl;
+    private String resultViewUrl;
+    private List<String> callbackFields;
+    private String resultQueryPath;
     private List<String> supportedTaskTypes;
     private String callbackPath;
 
@@ -25,6 +28,15 @@ public class ExternalSystemRegistrationRequest {
 
     public String getDashboardUrl() { return dashboardUrl; }
     public void setDashboardUrl(String dashboardUrl) { this.dashboardUrl = dashboardUrl; }
+
+    public String getResultViewUrl() { return resultViewUrl; }
+    public void setResultViewUrl(String resultViewUrl) { this.resultViewUrl = resultViewUrl; }
+
+    public List<String> getCallbackFields() { return callbackFields; }
+    public void setCallbackFields(List<String> callbackFields) { this.callbackFields = callbackFields; }
+
+    public String getResultQueryPath() { return resultQueryPath; }
+    public void setResultQueryPath(String resultQueryPath) { this.resultQueryPath = resultQueryPath; }
 
     public List<String> getSupportedTaskTypes() { return supportedTaskTypes; }
     public void setSupportedTaskTypes(List<String> supportedTaskTypes) { this.supportedTaskTypes = supportedTaskTypes; }

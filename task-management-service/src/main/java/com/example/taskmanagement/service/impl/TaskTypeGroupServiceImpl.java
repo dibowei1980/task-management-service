@@ -3,6 +3,7 @@ package com.example.taskmanagement.service.impl;
 import com.example.taskmanagement.dto.TaskTypeGroupRequest;
 import com.example.taskmanagement.dto.TaskTypeGroupResponse;
 import com.example.taskmanagement.model.TaskTypeGroup;
+import com.example.taskmanagement.repository.TaskTypeDefinitionRepository;
 import com.example.taskmanagement.repository.TaskTypeGroupRepository;
 import com.example.taskmanagement.service.TaskTypeGroupService;
 import org.springframework.cache.annotation.CacheEvict;
@@ -17,9 +18,11 @@ import java.util.UUID;
 public class TaskTypeGroupServiceImpl implements TaskTypeGroupService {
 
     private final TaskTypeGroupRepository repository;
+    private final TaskTypeDefinitionRepository taskTypeDefinitionRepository;
 
-    public TaskTypeGroupServiceImpl(TaskTypeGroupRepository repository) {
+    public TaskTypeGroupServiceImpl(TaskTypeGroupRepository repository, TaskTypeDefinitionRepository taskTypeDefinitionRepository) {
         this.repository = repository;
+        this.taskTypeDefinitionRepository = taskTypeDefinitionRepository;
     }
 
     @Override
@@ -80,6 +83,19 @@ public class TaskTypeGroupServiceImpl implements TaskTypeGroupService {
                 .orElseThrow(() -> new IllegalArgumentException("task type group not found"));
         entity.setEnabled(enabled);
         repository.save(entity);
+    }
+
+    @Override
+    @Transactional
+    @CacheEvict(value = {"taskTypeGroups", "taskTypes"}, allEntries = true)
+    public void delete(UUID id) {
+        TaskTypeGroup entity = repository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("task type group not found"));
+        long childCount = taskTypeDefinitionRepository.findByGroupIdOrderByNameAsc(id).size();
+        if (childCount > 0) {
+            throw new IllegalArgumentException("分组下还有 " + childCount + " 个任务类型，不能删除");
+        }
+        repository.delete(entity);
     }
 
     private void validateUniqueness(String code, String name, UUID excludeId) {

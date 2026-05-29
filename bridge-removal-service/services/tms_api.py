@@ -119,41 +119,6 @@ def get_subtasks(api_url, headers, task_id):
     return response.json() or []
 
 
-@_skip_if_no_tms()
-def delete_task(api_url, headers, task_id):
-    if not task_id:
-        return
-    response = requests.delete(f"{api_url}/tasks/{task_id}", headers=headers, timeout=30)
-    if response.status_code not in (200, 204):
-        response.raise_for_status()
-
-
-@_skip_if_no_tms()
-def clear_dependencies(api_url, headers, task_id):
-    if not task_id:
-        return
-    response = requests.delete(f"{api_url}/tasks/{task_id}/dependencies", headers=headers, timeout=30)
-    if response.status_code in (200, 204, 404):
-        return
-    response.raise_for_status()
-
-
-@_skip_if_no_tms()
-def create_dependencies(api_url, headers, adj):
-    for source_id, targets in adj.items():
-        for target_id in targets:
-            try:
-                response = requests.post(
-                    f"{api_url}/tasks/{target_id}/dependencies",
-                    headers=headers,
-                    params={"dependencyTaskId": source_id},
-                    timeout=15
-                )
-                response.raise_for_status()
-            except requests.exceptions.RequestException as e:
-                raise RuntimeError(f"为任务 {target_id} 添加依赖 {source_id} 失败: {e}")
-
-
 def report_progress(api_url, headers, task_id, workflow_status, progress, message):
     try:
         body = {

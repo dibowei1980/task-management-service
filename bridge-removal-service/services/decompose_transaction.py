@@ -57,7 +57,7 @@ class DecomposeTransaction:
             raise
 
     def stage_delete_db_records(self, task_ids: List[str], api_url: Optional[str], headers: Optional[dict]) -> List[str]:
-        from bridge_removal_task import _api_delete_task, _delete_task_local
+        from bridge_removal_task import _delete_task_local
 
         if not self._delete_staging_dir:
             raise RuntimeError("Transaction not started; call begin() first")
@@ -65,19 +65,16 @@ class DecomposeTransaction:
         deleted_ids = []
         snapshot_path = os.path.join(self._delete_staging_dir, "deleted_db_snapshots.jsonl")
         for task_id in task_ids:
-            if not api_url:
-                try:
-                    from services.project_service import get_project
-                    project = get_project(task_id)
-                    if project:
-                        with open(snapshot_path, "a", encoding="utf-8") as f:
-                            f.write(json.dumps(project, ensure_ascii=False, default=str) + "\n")
-                except Exception as snap_ex:
-                    logger.warning("[%s] Failed to snapshot DB record %s: %s", self.operation_name, task_id, snap_ex)
             try:
-                _api_delete_task(api_url, headers, task_id)
-                if not api_url:
-                    _delete_task_local(task_id)
+                from services.project_service import get_project
+                project = get_project(task_id)
+                if project:
+                    with open(snapshot_path, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(project, ensure_ascii=False, default=str) + "\n")
+            except Exception as snap_ex:
+                logger.warning("[%s] Failed to snapshot DB record %s: %s", self.operation_name, task_id, snap_ex)
+            try:
+                _delete_task_local(task_id)
                 deleted_ids.append(task_id)
             except Exception as e:
                 logger.error("[%s] Failed to delete DB record %s: %s", self.operation_name, task_id, e)
@@ -180,10 +177,9 @@ class DecomposeTransaction:
                     )
 
         if self._created_task_ids:
-            from bridge_removal_task import _api_delete_task, _delete_task_local
+            from bridge_removal_task import _delete_task_local
             for tid in self._created_task_ids:
                 try:
-                    _api_delete_task(None, None, tid)
                     _delete_task_local(tid)
                     logger.debug("[%s] Cleaned up newly created task on rollback: %s", self.operation_name, tid)
                 except Exception as cleanup_ex:

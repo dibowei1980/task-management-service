@@ -27,8 +27,7 @@ from services.tms_api import (
     parse_input_params, get_api_config, get_task,
     update_task_status, update_task_input_params,
     update_task_output_results, set_workflow_status,
-    get_subtasks, delete_task, clear_dependencies,
-    create_dependencies, report_progress,
+    get_subtasks, report_progress,
     init_project_roles_and_permissions,
 )
 from services.dependency import build_dependency_graph, merge_step_result, filter_operation_subtasks

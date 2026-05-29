@@ -1,8 +1,13 @@
 package com.example.taskmanagement.service;
 
 import com.example.taskmanagement.dto.ExternalSystemRegistrationRequest;
+import com.example.taskmanagement.dto.TaskTypeRegistrationRequest;
 import com.example.taskmanagement.model.ExternalSystemRegistration;
+import com.example.taskmanagement.model.TaskTypeRegistration;
 import com.example.taskmanagement.repository.ExternalSystemRegistrationRepository;
+import com.example.taskmanagement.repository.TaskTypeRegistrationRepository;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -23,7 +28,13 @@ public class ExternalSystemService {
     @Autowired
     private SsoClientWhitelistService ssoClientWhitelistService;
     @Autowired
+    private TaskTypeRegistrationService taskTypeRegistrationService;
+    @Autowired
+    private TaskTypeRegistrationRepository taskTypeRegistrationRepository;
+    @Autowired
     private TaskTypeService taskTypeService;
+    @Autowired
+    private ObjectMapper objectMapper;
 
     @Transactional
     public ExternalSystemRegistration register(ExternalSystemRegistrationRequest request) {
@@ -46,16 +57,40 @@ public class ExternalSystemService {
             throw new IllegalArgumentException("callbackPath is required");
         }
 
-        for (String type : request.getSupportedTaskTypes()) {
-            taskTypeService.validateTypeCodeUsable(type);
+        ExternalSystemRegistration existing = registrationRepository.findById(request.getSystemId()).orElse(null);
+
+        if (existing == null) {
+            for (String type : request.getSupportedTaskTypes()) {
+                TaskTypeRegistrationRequest typeReq = new TaskTypeRegistrationRequest();
+                typeReq.setCode(type);
+                typeReq.setName(request.getDisplayName() + " - " + type);
+                typeReq.setSourceSystem(request.getDisplayName());
+                typeReq.setSystemId(request.getSystemId());
+                typeReq.setDisplayName(request.getDisplayName());
+                typeReq.setServiceUrl(request.getServiceUrl());
+                typeReq.setDashboardUrl(request.getDashboardUrl());
+                typeReq.setCallbackPath(request.getCallbackPath());
+                typeReq.setSsoClientId(request.getSsoClientId());
+                typeReq.setResultViewUrl(request.getResultViewUrl());
+                typeReq.setCallbackFields(request.getCallbackFields());
+                typeReq.setResultQueryPath(request.getResultQueryPath());
+                taskTypeRegistrationService.submit(typeReq);
+            }
         }
 
-        ExternalSystemRegistration existing = registrationRepository.findById(request.getSystemId()).orElse(null);
         if (existing != null) {
             existing.setDisplayName(request.getDisplayName());
             existing.setServiceUrl(request.getServiceUrl());
             existing.setSsoClientId(request.getSsoClientId());
             existing.setDashboardUrl(request.getDashboardUrl());
+            existing.setResultViewUrl(request.getResultViewUrl());
+            existing.setResultQueryPath(request.getResultQueryPath());
+            if (request.getCallbackFields() != null && !request.getCallbackFields().isEmpty()) {
+                try {
+                    existing.setCallbackFields(objectMapper.writeValueAsString(request.getCallbackFields()));
+                } catch (JsonProcessingException ignored) {
+                }
+            }
             existing.setSupportedTaskTypes(String.join(",", request.getSupportedTaskTypes()));
             existing.setCallbackPath(request.getCallbackPath());
             existing.setRegisteredAt(ZonedDateTime.now());
@@ -69,6 +104,14 @@ public class ExternalSystemService {
         reg.setServiceUrl(request.getServiceUrl());
         reg.setSsoClientId(request.getSsoClientId());
         reg.setDashboardUrl(request.getDashboardUrl());
+        reg.setResultViewUrl(request.getResultViewUrl());
+        reg.setResultQueryPath(request.getResultQueryPath());
+        if (request.getCallbackFields() != null && !request.getCallbackFields().isEmpty()) {
+            try {
+                reg.setCallbackFields(objectMapper.writeValueAsString(request.getCallbackFields()));
+            } catch (JsonProcessingException ignored) {
+            }
+        }
         reg.setSupportedTaskTypes(String.join(",", request.getSupportedTaskTypes()));
         reg.setCallbackPath(request.getCallbackPath());
         reg.setRegisteredAt(ZonedDateTime.now());
@@ -95,9 +138,23 @@ public class ExternalSystemService {
 
     @Transactional
     public void unregister(String systemId) {
-        if (registrationRepository.existsById(systemId)) {
-            registrationRepository.deleteById(systemId);
-            logger.info("Unregistered external system: {}", systemId);
+        if (!registrationRepository.existsById(systemId)) {
+            return;
         }
+
+        List<TaskTypeRegistration> registrations = taskTypeRegistrationRepository.findBySystemId(systemId);
+        for (TaskTypeRegistration reg : registrations) {
+            if ("APPROVED".equals(reg.getStatus())) {
+                try {
+                    taskTypeService.deleteByCode(reg.getCode());
+                } catch (IllegalArgumentException e) {
+                    logger.warn("Could not delete task type {} during unregister: {}", reg.getCode(), e.getMessage());
+                }
+            }
+        }
+        taskTypeRegistrationRepository.deleteBySystemId(systemId);
+
+        registrationRepository.deleteById(systemId);
+        logger.info("Unregistered external system: {} (cleaned {} task type registrations)", systemId, registrations.size());
     }
 }

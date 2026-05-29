@@ -8,6 +8,7 @@ public class TaskTypeRequest {
     private UUID groupId;
     private String description;
     private Boolean enabled;
+    private String source;
 
     public String getCode() { return code; }
     public void setCode(String code) { this.code = code; }
@@ -19,4 +20,6 @@ public class TaskTypeRequest {
     public void setDescription(String description) { this.description = description; }
     public Boolean getEnabled() { return enabled; }
     public void setEnabled(Boolean enabled) { this.enabled = enabled; }
+    public String getSource() { return source; }
+    public void setSource(String source) { this.source = source; }
 }

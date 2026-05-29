@@ -106,6 +106,8 @@ export const TaskTypeManagementPage: React.FC = () => {
   const [typeForm, setTypeForm] = useState<TaskTypeRequest>(emptyTypeForm);
   const [editingTypeId, setEditingTypeId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [deletingGroupId, setDeletingGroupId] = useState<string | null>(null);
+  const [deletingTypeId, setDeletingTypeId] = useState<string | null>(null);
 
   const loadData = async () => {
     setLoading(true);
@@ -220,6 +222,44 @@ export const TaskTypeManagementPage: React.FC = () => {
     }
   };
 
+  const handleDeleteGroup = async (g: TaskTypeGroupResponse) => {
+    const childCount = allTypes.filter(t => t.groupId === g.id).length;
+    if (childCount > 0) {
+      setError(`分组「${g.name}」下还有 ${childCount} 个任务类型，无法删除`);
+      return;
+    }
+    if (!window.confirm(`确定删除分组「${g.name}」(${g.code})？此操作不可撤销。`)) return;
+    setDeletingGroupId(g.id);
+    setError(null);
+    try {
+      await taskTypeGroupService.delete(g.id);
+      if (selectedGroupId === g.id) setSelectedGroupId('');
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '删除分组失败');
+    } finally {
+      setDeletingGroupId(null);
+    }
+  };
+
+  const handleDeleteType = async (t: TaskTypeResponse) => {
+    if (t.referenceCount > 0) {
+      setError(`任务类型「${t.name}」已被 ${t.referenceCount} 个任务引用，无法删除`);
+      return;
+    }
+    if (!window.confirm(`确定删除任务类型「${t.name}」(${t.code})？此操作不可撤销。`)) return;
+    setDeletingTypeId(t.id);
+    setError(null);
+    try {
+      await taskTypeService.delete(t.id);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '删除任务类型失败');
+    } finally {
+      setDeletingTypeId(null);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div>
@@ -255,6 +295,7 @@ export const TaskTypeManagementPage: React.FC = () => {
                     </button>
                     <button onClick={() => openGroupModal(g)} className="text-xs text-blue-600 hover:underline px-1">编辑</button>
                     <button onClick={() => handleToggleGroup(g)} className="text-xs text-amber-600 hover:underline px-1">{g.enabled ? '停用' : '启用'}</button>
+                    <button onClick={() => void handleDeleteGroup(g)} disabled={deletingGroupId === g.id} className="text-xs text-red-600 hover:underline px-1 disabled:opacity-40">{deletingGroupId === g.id ? '删除中...' : '删除'}</button>
                   </li>
                 ))}
               </ul>
@@ -300,6 +341,7 @@ export const TaskTypeManagementPage: React.FC = () => {
                       <td className="py-2 space-x-2">
                         <button onClick={() => openTypeModal(t)} className="text-xs text-blue-600 hover:underline">编辑</button>
                         <button onClick={() => handleToggleType(t)} className="text-xs text-amber-600 hover:underline">{t.enabled ? '停用' : '启用'}</button>
+                        <button onClick={() => void handleDeleteType(t)} disabled={deletingTypeId === t.id} className="text-xs text-red-600 hover:underline disabled:opacity-40">{deletingTypeId === t.id ? '删除中...' : '删除'}</button>
                       </td>
                     </tr>
                   ))}

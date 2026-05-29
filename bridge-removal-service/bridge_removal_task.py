@@ -23,9 +23,6 @@ from services.tms_api import (
     update_task_output_results as _api_update_task_output_results,
     set_workflow_status as _api_set_workflow_status,
     get_subtasks as _api_get_subtasks,
-    delete_task as _api_delete_task,
-    clear_dependencies as _api_clear_dependencies,
-    create_dependencies as _api_create_dependencies,
     report_progress as _api_report_progress,
     init_project_roles_and_permissions,
 )
@@ -437,7 +434,7 @@ class BridgeRemovalOrchestratorTask(BaseTask):
                     raise RuntimeError(f"覆盖删除子任务失败（已回滚）: {del_ex}")
 
             if units_to_create:
-                created_tasks = self._create_subtasks_via_api(api_url, headers, units_to_create)
+                created_tasks = self._create_subtasks_local(units_to_create)
             else:
                 created_tasks = []
 
@@ -538,19 +535,14 @@ class BridgeRemovalOrchestratorTask(BaseTask):
         if rebuild_all is None:
             rebuild_all = True
         if rebuild_all:
-            if api_url:
-                for t in all_subtasks:
-                    try:
-                        _api_clear_dependencies(api_url, headers, t.get("id"))
-                    except Exception as ex:
-                        self._report_progress(api_url, headers, self.task_id, "处理中", 92, f"清理子任务依赖失败: taskId={t.get('id')}, err={ex}")
-            self._report_progress(api_url, headers, self.task_id, "处理中", 92, "已清理旧依赖关系")
+            self._report_progress(api_url, headers, self.task_id, "处理中", 92, "开始构建依赖关系")
 
             initial_statuses = self._determine_initial_statuses(api_url, headers, all_subtasks, order_strategy)
             self._update_subtask_statuses_via_api(api_url, headers, initial_statuses)
             self._report_progress(api_url, headers, self.task_id, "处理中", 98, "已构建依赖并设置子任务初始状态")
 
         self.results["created_subtask_count"] = len(units_to_create)
+        self.results["total_subtask_count"] = len(all_subtasks)
         self.results["subtask_initial_statuses"] = initial_statuses
         self._log(f"任务分解与分割完成：新建 {len(units_to_create)} 个子任务，当前总数 {len(all_subtasks)}。")
         self._report_progress(
@@ -850,10 +842,7 @@ class BridgeRemovalOrchestratorTask(BaseTask):
             if filtered:
                 created_adj[source_id] = filtered
         if created_adj:
-            if api_url:
-                _api_create_dependencies(api_url, headers, created_adj)
-            else:
-                self._log("本地模式：跳过新增子任务的远程依赖创建")
+            self._log("依赖关系仅在本地记录，不向 TMS 注册")
 
         def _is_predecessor_satisfied(task_obj):
             if not task_obj:
@@ -1042,33 +1031,6 @@ class BridgeRemovalOrchestratorTask(BaseTask):
             self._log(f"本地创建子任务 {subtask_id}")
         return created_tasks
 
-    def _create_subtasks_via_api(self, api_url, headers, task_units):
-        """通过API为每个任务单元创建子任务。"""
-        if not api_url:
-            return self._create_subtasks_local(task_units)
-        created_tasks = []
-        total = len(task_units) if task_units else 0
-        report_every = 1
-        if total >= 200:
-            report_every = max(1, total // 20)
-        elif total >= 50:
-            report_every = max(1, total // 10)
-        for unit in task_units:
-            self._log(f"正在为 '{unit['name']}' 创建API任务...")
-            try:
-                response = requests.post(f"{api_url}/tasks", headers=headers, data=json.dumps(unit), timeout=15)
-                response.raise_for_status()
-                task_data = response.json()
-                created_tasks.append(task_data)
-                idx = len(created_tasks)
-                if total > 0 and (idx == 1 or idx == total or idx % report_every == 0):
-                    progress = 30 + int(45 * idx / total)
-                    self._report_progress(api_url, headers, self.task_id, "处理中", progress, f"创建子任务中：{idx}/{total}")
-                self._log(f"成功创建任务 {task_data.get('id')}。")
-            except requests.exceptions.RequestException as e:
-                raise RuntimeError(f"为 '{unit['name']}' 创建子任务时API调用失败: {e}")
-        return created_tasks
-
     def _determine_initial_statuses(self, api_url, headers, tasks, order_strategy):
         """构建依赖图并确定每个任务的初始状态。"""
         if not tasks:
@@ -1088,10 +1050,7 @@ class BridgeRemovalOrchestratorTask(BaseTask):
         
         units_sorted = sorted(units_with_scope, key=lambda x: bridge_sort_key(x.get("bridge_id")), reverse=(order_strategy == "DESC"))
         adj, in_degree = build_dependency_graph(units_sorted)
-        if api_url:
-            _api_create_dependencies(api_url, headers, adj)
-        else:
-            self._log("本地模式：跳过远程依赖创建，依赖关系仅在本地记录")
+        self._log("本地模式：依赖关系仅在本地记录，不向 TMS 注册")
         self._log(f"依赖图入度: {in_degree}")
 
         try:

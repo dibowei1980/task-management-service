@@ -1,6 +1,6 @@
 # 生产协同系统 — 项目框架结构
 
-> 口径来源：以《需求说明规格书》v1.19、《生产任务管理模型》v1.19 为基准。本文档仅做架构与实施层面的细化解释。
+> 口径来源：以《需求说明规格书》v1.20、《生产任务管理模型》v1.20 为基准。本文档仅做架构与实施层面的细化解释。
 
 ## 一、系统定位
 
@@ -374,6 +374,9 @@ com.example.taskmanagement/
 │   ├── MeasurementUnitRequest.java / MeasurementUnitResponse.java  # 含 baseUnitCode、conversionFactor、basic
 │   ├── AttachmentResponse.java
 │   └── ExternalSystemRegistrationRequest.java
+├── dto/ (续)
+│   ├── TaskTypeRegistrationRequest.java   # 任务类型注册申请请求 DTO（含 callbackFields、resultQueryPath）
+│   └── TaskTypeRegistrationResponse.java  # 任务类型注册申请响应 DTO（含 callbackFields 反序列化为 List<String>、resultQueryPath）
 ├── model/
 │   ├── Task.java                    # 核心实体（含 workflow_status、remarks、attachment_count、status_workloads、in_progress_weight、qa_department_id、qa_assignee_id、assigner_id；source_task_id/qa_batch_no 已移除 v1.8）
 │   ├── TaskStatus.java              # 任务状态枚举（10 值）：PENDING/ASSIGNED/RECEIVED/IN_PROGRESS/PAUSED/SUBMITTED_FOR_QA/QA_COMPLETING/QA_COMPLETED/COMPLETED/FAILED
@@ -387,7 +390,9 @@ com.example.taskmanagement/
 │   ├── CompositionMode.java         # HOMOGENEOUS / HETEROGENEOUS
 │   ├── TaskAssignment.java          # 任务人员指派
 │   ├── TaskDependency.java          # 任务依赖
-│   └── ExternalSystemRegistration.java # 外部系统注册表
+│   ├── CallbackField.java            # 回传字段枚举（10值：TASK_ID/STATUS/NAME/OPERATOR/WORKLOAD/UNIT 必选，START_TIME/END_TIME/LOCATION/REMARKS 可选）
+│   ├── TaskTypeRegistration.java    # 任务类型注册申请实体（含 callbackFields/resultQueryPath，审批状态 PENDING/APPROVED/REJECTED）
+│   └── ExternalSystemRegistration.java # 外部系统注册表（含 resultViewUrl/callbackFields/resultQueryPath）
 ├── repository/
 │   ├── TaskRepository.java
 │   ├── ProjectTypeDefinitionRepository.java
@@ -398,6 +403,8 @@ com.example.taskmanagement/
 │   ├── TaskAssignmentRepository.java
 │   ├── TaskDependencyRepository.java
 │   └── ExternalSystemRegistrationRepository.java
+├── repository/ (续)
+│   └── TaskTypeRegistrationRepository.java
 ├── service/
 │   ├── TaskService.java / impl/TaskServiceImpl.java
 │   │   └── 创建/更新：类型校验（按 category 查不同字典）、工作量校验（项目必填、≤0 报错）
@@ -420,10 +427,17 @@ com.example.taskmanagement/
 │   ├── ExternalSystemService.java
 │   │   └── 注册校验：ssoClientId 白名单、taskType 存在于 task_type_definitions 且启用
 │   │   └── 非独占：同一类型可绑定多个外部系统
+│   │   └── 注册时保存 callbackFields（JSON 序列化）和 resultQueryPath
+│   ├── TaskTypeRegistrationService.java
+│   │   └── 提交注册申请（保存 callbackFields/resultQueryPath，JSON 序列化）
+│   │   └── 审批通过：创建 TaskTypeDefinition + 同步 callbackFields/resultQueryPath 到 ExternalSystemRegistration
+│   │   └── 审批拒绝：需填写拒绝原因
+│   │   └── updateCallbackFields：更新字段配置并同步到 ExternalSystemRegistration
+│   │   └── syncCallbackFieldsToExternalSystem：审批通过/更新字段时同步
 │   ├── DependencyService.java / impl/DependencyServiceImpl.java
 │   └── SsoClientWhitelistService.java
 ├── executor/
-│   └── ExternalSystemExecutor.java  # HTTP 分发任务到外部系统（含幂等 dispatchId、重试）
+│   └── ExternalSystemExecutor.java  # HTTP 分发任务到外部系统（含幂等 dispatchId、重试、callback_fields 传入 payload、resultViewUrl 模板替换设置 task.externalUrl）
 ├── security/
 │   ├── JwtAuthenticationFilter.java # 四级认证链
 │   ├── AuthzService.java            # 权限校验
@@ -461,8 +475,10 @@ com.example.taskmanagement/
 | 非叶子节点状态推导 | `TaskServiceImpl.recalculateAncestorStatus` | 递归统计叶子节点各状态数量，全同才设父状态，否则状态为空 |
 | 根项目自动流转 | `TaskServiceImpl.checkAutoTransition` | 质检完成叶子数=叶子总数→PENDING_ACCEPTANCE；创建人确认→ACCEPTANCE_COMPLETED；归档权限→ARCHIVED→COMPLETED（仅根项目） |
 | 非叶子节点只读 | `TaskServiceImpl.updateTask` | API 层拒绝直接修改非叶子节点的 status/progress |
-| 外部系统注册 | `ExternalSystemService.register` | 非独占，supportedTaskTypes 引用 task_type_definitions |
-| 分发回调 | `ExternalSystemExecutor` | 幂等 dispatchId，3 次重试（30s/60s/120s），超限告警 |
+| 外部系统注册 | `ExternalSystemService.register` | 非独占，supportedTaskTypes 引用 task_type_definitions；注册时保存 callbackFields（JSON 序列化）和 resultQueryPath |
+| 分发回调 | `ExternalSystemExecutor` | 幂等 dispatchId，3 次重试（30s/60s/120s），超限告警；callback_fields 传入 payload；resultViewUrl 模板替换设置 task.externalUrl |
+| 任务类型注册审批 | `TaskTypeRegistrationService` | 提交申请时保存 callbackFields/resultQueryPath；审批通过后同步到 ExternalSystemRegistration；审批拒绝需填写原因；仅 system:admin 可审批 |
+| 回传字段配置 | `TaskTypeRegistrationService.updateCallbackFields` | 更新需要拉取的字段子集；必选字段始终包含；更新后同步到 ExternalSystemRegistration |
 | 分解校验 | `TaskServiceImpl.decomposeTask` | Σ(subTasks.workload) = 父任务 workload（守恒，不一致时提示子节点合计、父节点工作量、差额和调整方向）；所有 subTasks.workloadUnit = 父任务 workloadUnit（同质）；子任务名称在同一父节点下必须唯一；父任务必须为叶子节点；操作人需 `department:manager` 或 `department:create` 权限；无 department:create 权限时强制覆盖执行部门和质检部门为当前用户所属部门 |
 | 撤销指派校验 | `TaskServiceImpl.revokeAssignment` | 被指派人未接收前可撤销（status 仍为 ASSIGNED）；操作人为指派人或具有 department:manager 权限 |
 | 接收校验 | `TaskServiceImpl.receiveTask` | 任务状态为 PENDING 或 ASSIGNED；操作人需 task:execute 权限；全部工作量从上游状态→RECEIVED |
@@ -534,7 +550,7 @@ com.example.taskmanagement/
 
 1. SSO 服务 + UPM (user-service)
 2. task-management-service
-3. bridge-removal-service（启动时自动注册到 TMS）
+3. bridge-removal-service（启动时向 TMS 提交任务类型注册申请，仅注册 BRIDGE_REMOVAL_BATCH；单元处理为 BRS 内部概念，不向 TMS 暴露）
 4. 前端 dev server
 
 ### 5.3 容错策略

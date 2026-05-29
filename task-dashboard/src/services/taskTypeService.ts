@@ -42,4 +42,7 @@ export const taskTypeService = {
   toggle: async (id: string, enabled: boolean): Promise<void> => {
     await taskApi.patch(`/api/task-types/${id}/toggle`, { enabled });
   },
+  delete: async (id: string): Promise<void> => {
+    await taskApi.delete(`/api/task-types/${id}`);
+  },
 };

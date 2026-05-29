@@ -41,4 +41,7 @@ export const taskTypeGroupService = {
   toggle: async (id: string, enabled: boolean): Promise<void> => {
     await taskApi.patch(`/api/task-type-groups/${id}/toggle`, { enabled });
   },
+  delete: async (id: string): Promise<void> => {
+    await taskApi.delete(`/api/task-type-groups/${id}`);
+  },
 };

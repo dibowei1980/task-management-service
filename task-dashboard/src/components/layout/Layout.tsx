@@ -42,6 +42,7 @@ export const Layout: React.FC = () => {
                 <>
                   <Link to="/settings/project-types" className={isActive('/settings/project-types') ? 'text-blue-600 font-medium' : 'text-gray-600 hover:text-blue-600'}>项目类型</Link>
                   <Link to="/settings/task-types" className={isActive('/settings/task-types') ? 'text-blue-600 font-medium' : 'text-gray-600 hover:text-blue-600'}>任务类型</Link>
+                  <Link to="/settings/task-type-registrations" className={isActive('/settings/task-type-registrations') ? 'text-blue-600 font-medium' : 'text-gray-600 hover:text-blue-600'}>类型审批</Link>
                   <Link to="/settings/measurement-units" className={isActive('/settings/measurement-units') ? 'text-blue-600 font-medium' : 'text-gray-600 hover:text-blue-600'}>计量单位</Link>
                 </>
               )}

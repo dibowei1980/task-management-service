@@ -102,11 +102,13 @@ def receive_project(project_id: str):
                 if task_status == "COMPLETED":
                     update_project_fields(project_id, {"status": "COMPLETED", "progress": 100})
                     update_job_status(job_id, "COMPLETED", results=task_results)
-                    callback_task_status(project_id, "COMPLETED", results=task_results)
+                    total_count = task_results.get("total_subtask_count") if isinstance(task_results, dict) else None
+                    callback_task_status(project_id, "COMPLETED", results=task_results, total_sub_task_count=total_count)
                 else:
                     update_project_fields(project_id, {"status": "FAILED"})
                     update_job_status(job_id, "FAILED", error=str(task_results.get("error", "Unknown error")))
-                    callback_task_status(project_id, "FAILED", results=task_results)
+                    total_count = task_results.get("total_subtask_count") if isinstance(task_results, dict) else None
+                    callback_task_status(project_id, "FAILED", results=task_results, total_sub_task_count=total_count)
             except Exception as e:
                 error_msg = str(e)
                 update_project_fields(project_id, {"status": "FAILED"})

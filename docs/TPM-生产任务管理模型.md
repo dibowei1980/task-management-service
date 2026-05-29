@@ -1,8 +1,8 @@
 # 生产任务管理模型
 
-> 口径来源：以《需求说明规格书》v1.19 为唯一基准。本文件仅做实现细化与架构解释，不得改变需求规格书中的状态机定义、职责边界、安全约束与可靠性规则。
+> 口径来源：以《需求说明规格书》v1.20 为唯一基准。本文件仅做实现细化与架构解释，不得改变需求规格书中的状态机定义、职责边界、安全约束与可靠性规则。
 >
-> 最新对照：已对齐《需求说明规格书》2026-05-13 v1.19（外部系统完成后仍需 TMS 质检；彩色进度条同质按工作量、异质按权重比例；QA_COMPLETED 后禁止直接 FAILED 返工，需新建返修任务；同质工作量不一致必须提示差额；QA_COMPLETING 质检不通过退回 IN_PROGRESS；previousAssigneeId 生命周期补充）。
+> 最新对照：已对齐《需求说明规格书》2026-05-28 v1.20（任务类型注册审批机制；resultViewUrl 语义明确；回传字段配置功能；BRS 相关类型禁止自动注册）。
 
 ## 一、模型总览
 
@@ -22,12 +22,14 @@
 │    ├─ WorkflowStatus (项目验收归档阶段，3 值，仅根项目 PROJECT)   │
 │    ├─ ProjectTypeDefinition (项目类型字典，服务领域)            │
 │    ├─ TaskTypeDefinition (任务类型字典，技术工序)              │
-│    ├─ TaskTypeGroup (任务类型分组字典)                         │
-│    ├─ MeasurementUnitDefinition (计量单位字典，基本/派生两级)    │
-│    ├─ CompositionMode (同质/异质枚举)                          │
-│    └─ TaskCategory (任务分类枚举)                              │
+│  ├─ TaskTypeGroup (任务类型分组字典)                         │
+│  ├─ MeasurementUnitDefinition (计量单位字典，基本/派生两级)    │
+│  ├─ CompositionMode (同质/异质枚举)                          │
+│  ├─ TaskCategory (任务分类枚举)                              │
+│  ├─ CallbackField (回传字段枚举，10值，6必选+4可选)             │
+│  └─ TaskTypeRegistration (任务类型注册申请，含审批流程)       │
 │                                                                │
-│  ExternalSystemRegistration (外部系统注册表)                    │
+│  ExternalSystemRegistration (外部系统注册表，含 callbackFields/resultQueryPath)                    │
 │                                                                │
 ├────────────────────────────────────────────────────────────────┤
 │  bridge-removal-service 作为外部系统对接                        │
@@ -549,7 +551,7 @@ PENDING ──→ ASSIGNED ──→ RECEIVED ──→ IN_PROGRESS ──→ SU
 | `code` | VARCHAR(64) | 类型编码，全局唯一 |
 | `name` | VARCHAR(128) | 类型名称 |
 | `description` | VARCHAR(500) | 类型说明 |
-| `source` | VARCHAR(32) | 来源：`BUILTIN` / `CUSTOM` |
+| `source` | VARCHAR(32) | 来源：`BUILTIN` / `CUSTOM` / `EXTERNAL`（内置 / 手动创建 / 外部系统注册审批） |
 | `enabled` | BOOLEAN | 是否启用 |
 | `reference_count` | INTEGER | 引用次数缓存，用于删除校验 |
 | `created_at / updated_at` | TIMESTAMPTZ | 时间戳 |
@@ -575,7 +577,7 @@ PENDING ──→ ASSIGNED ──→ RECEIVED ──→ IN_PROGRESS ──→ SU
 | `name` | VARCHAR(128) | 类型名称 |
 | `group_id` | UUID | 所属分组，FK → task_type_group(id) |
 | `description` | VARCHAR(500) | 类型说明 |
-| `source` | VARCHAR(32) | 来源：`BUILTIN` / `CUSTOM` |
+| `source` | VARCHAR(32) | 来源：`BUILTIN` / `CUSTOM` / `EXTERNAL`（内置 / 手动创建 / 外部系统注册审批） |
 | `enabled` | BOOLEAN | 是否启用 |
 | `reference_count` | INTEGER | 引用次数缓存，用于删除校验 |
 | `created_at / updated_at` | TIMESTAMPTZ | 时间戳 |
@@ -1001,7 +1003,10 @@ PENDING ──→ ASSIGNED ──→ RECEIVED ──→ IN_PROGRESS ──→ SU
 | `sso_client_id` | String | UPM 注册的 SSO 客户端 ID（必填，需在 SSO 白名单内） |
 | `dashboard_url` | String | 第三方应用面板 URL（可选，新窗口跳转） |
 | `supported_task_types` | List\<String\> | 支持的任务类型编码列表，编码必须存在于 `task_type_definitions` 且已启用；不接收项目类型编码 |
-| `callback_path` | String | 回调路径模板（如 `/tasks/{id}/execute`） |
+| `callback_path` | String | 回调路径模板（如 `/api/v1/projects/{id}/execute`）；`{id}` 占位符在运行时替换为实际任务 ID |
+| `result_view_url` | String | 任务结果查看页面 URL 模板（如 `http://localhost:5174/tasks/{id}/locate?tab=result`）；与 callbackPath 语义不同：callbackPath 是 TMS→外部系统的任务下发入口，resultViewUrl 是 TMS 用户查看外部系统任务执行结果的页面；`{id}` 占位符替换后写入 task.externalUrl |
+| `callback_fields` | String | 外部系统可提供的回传字段列表（JSON 数组字符串，枚举值见 6.3）；审批通过后从 TaskTypeRegistration 同步 |
+| `result_query_path` | String | 外部系统统一结果查询 API 路径模板（如 `/api/v1/projects/{id}/result`）；`{id}` 占位符在运行时替换为实际任务 ID；审批通过后从 TaskTypeRegistration 同步 |
 | `registered_at` | Timestamp | 注册时间 |
 
 **注册安全约束**：
@@ -1010,7 +1015,54 @@ PENDING ──→ ASSIGNED ──→ RECEIVED ──→ IN_PROGRESS ──→ SU
 - 外部系统只能声明对任务类型的支持，不对接项目类型
 - 服务间通信在内网部署场景下不使用额外认证
 
-### 6.2 交互协议
+### 6.2 任务类型注册申请表
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | UUID | 主键 |
+| `type_code` | String | 任务类型代码（唯一标识符） |
+| `type_name` | String | 任务类型名称 |
+| `group_id` | UUID | 任务类型分组 ID（审批时由管理员选择） |
+| `system_id` | String | 申请的外部系统标识 |
+| `callback_path` | String | 任务分发路径模板 |
+| `result_view_url` | String | 任务结果查看页面 URL 模板 |
+| `interface_manifest` | String | TMS 对接接口清单（JSON，含接口名称、版本号、调用方式及参数说明） |
+| `callback_fields` | String | 外部系统可提供的回传字段列表（JSON 数组字符串） |
+| `result_query_path` | String | 外部系统统一结果查询 API 路径模板 |
+| `status` | Enum | 申请状态：PENDING / APPROVED / REJECTED |
+| `reviewer_id` | String | 审批人 ID |
+| `reviewed_at` | Timestamp | 审批时间 |
+| `review_remark` | String | 审批备注（拒绝时为拒绝原因） |
+| `created_at` | Timestamp | 申请提交时间 |
+
+**审批流程**：
+- 收到申请后先查重，类型代码已存在则直接拒绝
+- 未重复的申请进入 PENDING 状态，等待 system:admin 权限用户审批
+- 审批通过（APPROVED）：选择分组后自动创建 TaskTypeDefinition，并将 callbackFields/resultQueryPath 同步到 ExternalSystemRegistration
+- 审批拒绝（REJECTED）：必须填写拒绝原因
+
+### 6.3 回传字段枚举（CallbackField）
+
+| 枚举值 | 中文标签 | 必选 | 说明 |
+|--------|---------|------|------|
+| `TASK_ID` | 任务ID | ✅ | 外部系统任务唯一标识 |
+| `STATUS` | 任务状态 | ✅ | 任务当前状态 |
+| `NAME` | 任务名称 | ✅ | 任务名称 |
+| `OPERATOR` | 操作员 | ✅ | 执行操作的人员 |
+| `WORKLOAD` | 任务量 | ✅ | 双精度，任务工作量 |
+| `UNIT` | 任务计量单位 | ✅ | 字符串，任务计量单位 |
+| `START_TIME` | 开始时间 | ❌ | 任务开始执行时间 |
+| `END_TIME` | 完成时间 | ❌ | 任务完成时间 |
+| `LOCATION` | 位置信息 | ❌ | 位置数据，可能是点、线、面 |
+| `REMARKS` | 备注信息 | ❌ | 备注说明 |
+
+**字段配置规则**：
+- 外部系统在注册申请时声明可提供的全部回传字段（`callbackFields`）和统一查询路径（`resultQueryPath`）
+- TMS 管理员审批通过后，可随时通过 `PUT /{id}/callback-fields` 调整需要拉取的字段子集；必选字段始终包含
+- 审批通过或更新字段配置时，自动将 callbackFields/resultQueryPath 同步到 ExternalSystemRegistration
+- TMS 下发任务时将 callback_fields 传入 payload，外部系统仅返回请求字段的数据
+
+### 6.4 交互协议
 
 ```
 ┌──────────────────────┐                    ┌──────────────────────────┐
@@ -1034,6 +1086,13 @@ PENDING ──→ ASSIGNED ──→ RECEIVED ──→ IN_PROGRESS ──→ SU
 │                      │  ⑦ 人员统计查询    │                          │
 │                      │──────────────────→│  （按需调用，标注来源）   │
 │                      │←──────────────────│                          │
+│                      │                    │                          │
+│                      │  ⑧ 提交类型注册申请 │                          │
+│                      │←──────────────────│  （含 callbackFields）     │
+│                      │                    │                          │
+│                      │  ⑨ 结果数据查询    │                          │
+│                      │──────────────────→│  （按 resultQueryPath）  │
+│                      │←──────────────────│  （仅返回请求字段）       │
 └──────────────────────┘                    └──────────────────────────┘
 ```
 
@@ -1043,6 +1102,8 @@ PENDING ──→ ASSIGNED ──→ RECEIVED ──→ IN_PROGRESS ──→ SU
 - 所有回调记录 `requestId` 与回调时间
 - 人员统计标注数据来源（外部系统名或"TMS"）（需求规格书 2.3.2）
 - 业务状态→平台状态的映射由外部系统内部维护；TMS 仅接收平台标准状态
+- BRS 仅向 TMS 注册桥梁去除（批处理），单元处理为 BRS 内部概念，不向 TMS 暴露单个子任务；子任务的待初检映射为 TMS 的进行中（IN_PROGRESS）状态，通过/不通过也作为 BRS 内部业务流
+- BRS 通过 statusWorkloads 机制上报批处理进度，并通过 `totalSubTaskCount` 字段上报总子任务数量，TMS 将其设置为任务 workload 用于进度计算
 
 ---
 

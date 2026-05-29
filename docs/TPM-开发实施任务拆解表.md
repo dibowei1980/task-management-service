@@ -1,6 +1,6 @@
 # 生产协同系统 — 开发实施任务拆解表
 
-> 口径来源：`需求说明规格书.md`（v1.19）、`生产任务管理模型.md`（v1.19）、`项目框架结构.md`（v1.19）
+> 口径来源：`需求说明规格书.md`（v1.20）、`生产任务管理模型.md`（v1.20）、`项目框架结构.md`（v1.20）
 > 用途：作为动态项目类型、计量单位、同质/异质任务、工作量与进度规则、质检闭环与外部系统协同规则改造的实施指导清单
 
 ---
@@ -79,6 +79,45 @@
 | P1 | 改造外部系统完成回调 | 回调接口 / Service | 外部系统 COMPLETED 映射为 SUBMITTED_FOR_QA，不直接进入 QA_COMPLETED；TMS 质检通过后才完成 ✅ 已完成——`ExternalSystemExecutor.resolveTaskStatus()` 将 COMPLETED 映射为 SUBMITTED_FOR_QA |
 | P1 | 兼容历史任务读取 | Repository / Service | 历史数据升级后可正常读取、编辑、分发 |
 | P2 | 完善操作日志 | AOP / Log | 类型变更、结构阻断、公式重算可审计 |
+
+### 2.4a 任务类型注册审批
+
+| 优先级 | 任务项 | 输出物 | 验收标准 |
+|--------|--------|--------|---------|
+| P1 | 实现 TaskTypeRegistration 实体 | Entity / Repository | 支持申请状态 PENDING/APPROVED/REJECTED、审批人、审批时间、备注 |
+| P1 | 实现 TaskTypeRegistrationService | Service | 提交申请（含查重）、审批通过（选择分组+创建 TaskTypeDefinition+同步字段）、审批拒绝（需填写原因） |
+| P1 | 实现 TaskTypeRegistrationController | Controller | POST 提交、GET 列表、POST 审批通过/拒绝；审批仅 system:admin 权限 |
+| P1 | 移除 H2SchemaBootstrap 中 BRS 类型自动注册 | H2SchemaBootstrap | BRIDGE_REMOVAL_BATCH 不在启动时自动注册；BRIDGE_REMOVAL_UNIT 为 BRS 内部概念，不向 TMS 注册 |
+| P1 | BRS 提交注册申请 | callback_service.py | 启动时向 TMS 提交完整注册申请（仅 BRIDGE_REMOVAL_BATCH，含 typeCode、typeName、callbackPath、resultViewUrl、callbackFields、resultQueryPath） |
+
+> 当前状态（2026-05-28）：2.4a 全部 P1 任务已完成——TaskTypeRegistration 实体/Repository/Service/Controller 已实现；审批通过后自动创建 TaskTypeDefinition 并同步 callbackFields/resultQueryPath 到 ExternalSystemRegistration；H2SchemaBootstrap 已移除 BRS 类型自动注册；BRS callback_service.py 已实现 `_submit_task_type_registration()` 提交完整注册申请；前端 TaskTypeRegistrationPage 已实现审批界面（含 CallbackFieldsModal 字段配置弹窗）。
+
+### 2.4b 回传字段配置
+
+| 优先级 | 任务项 | 输出物 | 验收标准 |
+|--------|--------|--------|---------|
+| P1 | 实现 CallbackField 枚举 | CallbackField.java | 10 个枚举值（6 必选+4 可选），含中文标签和必选标记 |
+| P1 | TaskTypeRegistration 新增 callbackFields/resultQueryPath 字段 | Entity / DTO | 申请时保存 JSON 序列化的 callbackFields 和 resultQueryPath |
+| P1 | ExternalSystemRegistration 新增 callbackFields/resultQueryPath 字段 | Entity / DTO | 运行时实体，从 TaskTypeRegistration 同步 |
+| P1 | 实现 updateCallbackFields 方法 | Service | 管理员可随时调整需要拉取的字段子集，更新后同步到 ExternalSystemRegistration |
+| P1 | 实现 syncCallbackFieldsToExternalSystem | Service | 审批通过或更新字段时自动同步 |
+| P1 | 下发任务时传递 callback_fields | ExternalSystemExecutor | payload 中包含 callback_fields 列表 |
+| P1 | 前端回传字段配置弹窗 | CallbackFieldsModal | 管理员可查看声明字段并勾选需要拉取的子集 |
+| P2 | resultViewUrl 模板替换 | ExternalSystemExecutor | 运行时替换 {id} 占位符，设置 task.externalUrl |
+
+> 当前状态（2026-05-28）：2.4b 全部 P1 和 P2 任务已完成——CallbackField 枚举已实现；TaskTypeRegistration/ExternalSystemRegistration 已添加 callbackFields/resultQueryPath 字段；updateCallbackFields 和 syncCallbackFieldsToExternalSystem 已实现；ExternalSystemExecutor 下发时传递 callback_fields 并替换 resultViewUrl 模板；前端 CallbackFieldsModal 已实现字段配置弹窗。
+
+### 2.4c BRS 内部化与子任务总数上报
+
+| 优先级 | 任务项 | 输出物 | 验收标准 |
+|--------|--------|--------|---------|
+| P1 | BRS 仅注册 BRIDGE_REMOVAL_BATCH | callback_service.py | 移除 BRIDGE_REMOVAL_UNIT 注册申请，supportedTaskTypes 仅含 BATCH；interfaceManifest 移除"依赖管理" ✅ 已完成 |
+| P1 | WorkflowStatusUpdateRequest 新增 totalSubTaskCount | DTO | 字段类型 Integer，getter/setter ✅ 已完成 |
+| P1 | TaskServiceImpl 处理 totalSubTaskCount | Service | totalSubTaskCount 设置为任务 workload，记录到 completion_data ✅ 已完成 |
+| P1 | BRS 回调携带 totalSubTaskCount | callback_service.py / projects.py | callback_task_status 新增 total_sub_task_count 参数；批处理完成回调时传入 task_results.total_subtask_count ✅ 已完成 |
+| P1 | BridgeRemovalOrchestratorTask 记录 total_subtask_count | bridge_removal_task.py | execute() 完成后 results 中包含 total_subtask_count ✅ 已完成 |
+
+> 当前状态（2026-05-29）：2.4c 全部 P1 任务已完成——BRS 仅注册 BRIDGE_REMOVAL_BATCH；WorkflowStatusUpdateRequest 新增 totalSubTaskCount；TaskServiceImpl 处理 totalSubTaskCount 设置 workload；BRS 回调携带 totalSubTaskCount；OrchestratorTask 记录 total_subtask_count。
 
 ### 2.5 后端测试任务
 
